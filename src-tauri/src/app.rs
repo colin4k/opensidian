@@ -1913,6 +1913,35 @@ fn platform_info() -> platform::PlatformInfo {
     platform::info()
 }
 
+/* ---- iCloud state of the open vault ----
+   Two facts the backend knows and the UI must not infer from file names it
+   happens to see:
+   - cloud_only: a note whose bytes are in iCloud. Its `.Name.md.icloud`
+     placeholder is the only thing on disk, so the note is listed (index.rs)
+     but cannot be read until the system materialises it. The UI offers to
+     download instead of opening an empty buffer over real content.
+   - conflicts: iCloud's conflict copies. Apple marks them in a PARENTHETICAL
+     ("Note (conflicted copy 2024-05-01).md"); a plain " 2.md" is a legitimate
+     user name and is NOT reported here. */
+#[derive(Debug, Default, serde::Serialize)]
+struct VaultIssues {
+    cloud_only: Vec<String>,
+    conflicts: Vec<String>,
+}
+
+fn is_conflict_name(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("conflicted copy")
+}
+
+#[tauri::command]
+fn vault_issues(v: State<Vault>) -> VaultIssues {
+    let ix = v.index.lock().unwrap();
+    VaultIssues {
+        cloud_only: ix.cloud_only().to_vec(),
+        conflicts: ix.names().iter().filter(|n| is_conflict_name(n)).cloned().collect(),
+    }
+}
+
 /* ---- iOS vault entry points ----
    Both pick and restore BLOCK on user/system work (the picker waits for a
    person; resolving a bookmark hits the file provider), so they run on the
@@ -1961,11 +1990,15 @@ fn ios_forget_vault(path: String) {
     }
 }
 
-/// Ask iCloud to materialise a file (a note the user opened while offline).
-/// A local file is not an error to the caller: it is already here.
+/// Ask iCloud to materialise a note (one the user opened while its bytes were
+/// still in the cloud). Takes the vault-relative NAME, not a path, so the
+/// frontend cannot ask for a file outside the vault. A local file is already
+/// here: "download did not start" is not an error on desktop.
 #[tauri::command]
-fn ios_download(path: String) -> Result<(), String> {
-    match platform::download(Path::new(&path)) {
+fn ios_download(v: State<Vault>, name: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let p = note_path_in(&root, &name, false).ok_or("not a note in this vault")?;
+    match platform::download(&p) {
         Ok(()) => Ok(()),
         Err(e) if platform::IS_MOBILE => Err(e),
         Err(_) => Ok(()),
@@ -6809,7 +6842,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, vault_issues, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -6833,7 +6866,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get,
             create_vault, create_vault_dir, boot_notice, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, vault_issues, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -12138,5 +12171,22 @@ mod handler_list_tests {
             .filter(|d| !mobile.iter().any(|m| m == *d) && !DESKTOP_ONLY.contains(&d.as_str()))
             .collect();
         assert!(dropped.is_empty(), "desktop commands silently missing from mobile (add to DESKTOP_ONLY or to both): {dropped:?}");
+    }
+}
+
+/* iCloud conflict copies: the ONLY marker Apple guarantees is the parenthetical
+   "conflicted copy". A name ending in " 2" is a legitimate user file, so it must
+   not be reported as a conflict — that would put a banner on a clean vault. */
+#[cfg(test)]
+mod vault_issue_tests {
+    use super::*;
+
+    #[test]
+    fn conflict_copies_are_only_the_parenthetical() {
+        assert!(is_conflict_name("Note (conflicted copy 2024-05-01)"));
+        assert!(is_conflict_name("Note (Conflicted Copy)"));
+        assert!(!is_conflict_name("Note 2"), "a user is allowed to name a note 2");
+        assert!(!is_conflict_name("conflict notes"), "prose, not a marker");
+        assert!(!is_conflict_name("Copy of Note"));
     }
 }

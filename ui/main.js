@@ -68,6 +68,12 @@ const $ = id => document.getElementById(id);
 let PLATFORM = { os: "unknown", mobile: false, can_switch_vault: false,
                  native_folder_picker: false, plugins: true, updater: true };
 
+/* iCloud state of the open vault (vault_issues): names only in the cloud, and
+   iCloud's conflict copies. Kept as sets so the tree click can refuse to open a
+   note whose bytes are not here (an empty buffer over real content is how a
+   save eats it). Filled after enterVault and on every watcher event. */
+let CLOUD = new Set(), CONFLICTS = [], conflictKey = "", cloudSaid = false;
+
 /* ---- iOS shell helpers (P3 slice 1) -------------------------------------
    Scoped to PLATFORM.mobile; every caller checks it. Desktop gets none of this
    behaviour, not a hidden copy of it. */
@@ -6058,6 +6064,16 @@ async function switchTab(g, i) {
 }
 
 async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
+  // iOS: a note whose bytes are still in iCloud cannot be opened — the file on
+  // disk is only a placeholder, so an "empty" buffer would be a lie that a save
+  // then writes over the real content. Ask the system to materialise it; the
+  // watcher's create event brings it in and the next tap opens it.
+  if (PLATFORM.mobile && CLOUD.has(name)) {
+    inv("ios_download", { name })
+      .then(() => say(base(name) + " is downloading from iCloud; it opens when it arrives.", "icloud"))
+      .catch(err => say(String(err), "icloud"));
+    return;
+  }
   const g = fg();
   if (via !== "boot" && PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "tab")) return;   // top5-func: a plugin view may own this note (views.js PV.openAs)
   const lt = g.active >= 0 ? g.tabs[g.active] : null;
@@ -11928,12 +11944,20 @@ async function enterVault() {
   await loadVaultCss();              // themefs R3: the vault's own snippet CSS, before first paint of a note
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
+  // iCloud state before the tree is clickable: which notes are cloud-only, and
+  // whether there are conflict copies worth a banner. Awaited — a tap on a
+  // cloud-only row must already be refused on the first frame it can happen.
+  await loadVaultIssues();
   const names = await inv("list_notes");
   // R28.7 / R28.13: the restore, or — if there is no file, it is corrupt, or
   // nothing in it survived the degrade rule — the ordinary first-launch path.
   // Both land on a usable window; that is the whole point of R28.13.
   if (!await wsApply(wdoc, names)) {
-    if (names.length) await openInTab(names[0], "boot");
+    // iOS: never auto-open a note whose bytes are in iCloud — that would kick a
+    // download nobody asked for, and the tab would show an empty buffer until it
+    // landed. The first LOCAL note is the same "land on a usable window" rule.
+    const firstLocal = names.find(n => !CLOUD.has(n));
+    if (firstLocal) await openInTab(firstLocal, "boot");
     else renderTabs(g);
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
@@ -12067,6 +12091,32 @@ async function dropTab(g, i, cause, via) {
   await loadActive(g);
 }
 let vcCount = 0;                               // census [vc:N] — events handled
+/* iCloud state after any watcher event: a download that just landed removes a
+   name from CLOUD, a new conflict copy adds one. Only the CONFLICT banner is
+   (re)said, and only when the set actually changed — a banner that reappears on
+   every keystroke-save would be noise, not information. */
+async function loadVaultIssues() {
+  let r;
+  try { r = await inv("vault_issues"); } catch (_) { return; }
+  CLOUD = new Set(r.cloud_only || []);
+  CONFLICTS = r.conflicts || [];
+  const key = CONFLICTS.join("\n");
+  if (CONFLICTS.length && key !== conflictKey) {
+    conflictKey = key;
+    const shown = CONFLICTS.slice(0, 3).map(base).join(", ");
+    say(CONFLICTS.length + " iCloud conflict cop" + (CONFLICTS.length === 1 ? "y" : "ies") +
+        " in this vault (" + shown + (CONFLICTS.length > 3 ? ", …" : "") +
+        "). Both versions were kept — compare them in Files.", "icloud");
+  } else if (!CONFLICTS.length) {
+    conflictKey = "";
+    // one line on the first frame that knows: the tree lists cloud notes like
+    // any other, and the user deserves to know why the first tap says "downloading"
+    if (CLOUD.size && !cloudSaid) {
+      cloudSaid = true;
+      say(CLOUD.size + " note" + (CLOUD.size === 1 ? " is" : "s are") + " in iCloud; they download when you open one.", "icloud");
+    }
+  }
+}
 async function onVaultChanged(c) {
   vcCount++;
   // tabclose: `gone` used to be one undifferentiated Set, so the log could not
@@ -12097,6 +12147,7 @@ async function onVaultChanged(c) {
   }
   await refreshTree();
   await refreshBm();
+  void loadVaultIssues();
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
   if (rightOpen) rSchedule();
   updateTitle();

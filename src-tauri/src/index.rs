@@ -53,6 +53,12 @@ pub struct Index {
     /// they never enter `notes`, they only answer "does this embed resolve?"
     /// for BOTH renderers, so the two agree by construction.
     images: Vec<String>,
+    /// iCloud: notes whose CONTENT is not on this device. The system leaves a
+    /// hidden `.Name.md.icloud` placeholder where the file would be, and the
+    /// real file does not exist until it is materialised. They are listed and
+    /// resolvable (a link to one is not a ghost, the tree shows it) but have no
+    /// `NoteMeta`: nothing to parse until the bytes are local. Sorted.
+    cloud: Vec<String>,
     /// R19: graph (nodes + edges + adjacency) built lazily from memory and
     /// kept until the edge set changes (link edit, new/removed/renamed note).
     /// graph / graph_local serve from here: no per-call rebuild, no disk.
@@ -420,11 +426,35 @@ pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
     hit(l).or_else(|| md_stem(l).and_then(hit))
 }
 
-fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) {
+/// `.Note.md.icloud` -> `Note.md`; None for every other hidden name.
+///
+/// iCloud Drive replaces an evicted item with a dot-prefixed placeholder named
+/// `<real name>.icloud`. While it is there the note EXISTS (the user sees it in
+/// Files) but has no bytes here, so the walk must not simply drop it as a
+/// hidden file: that is exactly how a cloud-only note became invisible.
+pub fn icloud_stub(name: &str) -> Option<&str> {
+    let inner = name.strip_prefix('.')?.strip_suffix(".icloud")?;
+    // a real file name: not empty, has an extension, is not itself hidden
+    (!inner.is_empty() && inner.len() < 255 && inner.contains('.') && !inner.starts_with('.')).then_some(inner)
+}
+
+fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>, cloud: &mut Vec<String>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
+            // an evicted iCloud note: list it as a NOTE NAME (extension stripped,
+            // same shape as the real branch below), never as a file to read
+            if let Some(real) = icloud_stub(&name) {
+                if let Some(stem) = real.strip_suffix(".md") {
+                    let rel = dir.strip_prefix(base).unwrap_or(Path::new(""));
+                    cloud.push(if rel.as_os_str().is_empty() {
+                        stem.to_string()
+                    } else {
+                        format!("{}/{}", rel.display(), stem)
+                    });
+                }
+            }
             continue;
         }
         let p = e.path();
@@ -435,7 +465,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
             continue;
         }
         if m.is_dir() {
-            walk(&p, base, out, imgs);
+            walk(&p, base, out, imgs, cloud);
         } else if let Some(rel) = img_rel(&p, base, &name) {
             // R29.6: image files are vault MEMBERS but never notes. They ride
             // the note walk (no second traversal, no second symlink policy) and
@@ -549,7 +579,7 @@ fn read_parse_all(root: &Path, notes: Vec<String>) -> Vec<(String, NoteMeta)> {
 /// sorted note names under root (the one and only vault walk)
 pub fn notes_of(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    walk(root, root, &mut out, &mut Vec::new());
+    walk(root, root, &mut out, &mut Vec::new(), &mut Vec::new());
     out.sort();
     out
 }
@@ -559,16 +589,32 @@ impl Index {
     /// the R29.6 image members — no second traversal, no second symlink policy.
     pub fn build(root: &Path) -> Index {
         let mut ix = Index::default();
-        let (mut notes, mut imgs) = (Vec::new(), Vec::new());
-        walk(root, root, &mut notes, &mut imgs);
+        let (mut notes, mut imgs, mut cloud) = (Vec::new(), Vec::new(), Vec::new());
+        walk(root, root, &mut notes, &mut imgs, &mut cloud);
         notes.sort();
         imgs.sort();
+        cloud.sort();
+        cloud.dedup();
         ix.images = imgs;
         ix.notes = read_parse_all(root, notes).into_iter().collect();
+        // a leftover placeholder next to a materialised file is the SAME note:
+        // the real bytes win, and the note is not reported as cloud-only
+        cloud.retain(|n| !ix.notes.contains_key(n));
+        cloud.shrink_to_fit();
+        ix.cloud = cloud;
         ix.root = Some(root.to_path_buf());
         ix.refresh_names();
         ix.rebuild_backlinks();
         ix
+    }
+
+    /// notes whose bytes are still in iCloud (sorted, no `.md`)
+    pub fn cloud_only(&self) -> &[String] {
+        &self.cloud
+    }
+
+    pub fn is_cloud_only(&self, name: &str) -> bool {
+        self.cloud.binary_search_by(|n| n.as_str().cmp(name)).is_ok()
     }
 
     pub fn len(&self) -> usize {
@@ -637,7 +683,17 @@ impl Index {
     }
 
     fn refresh_names(&mut self) {
-        self.names = self.notes.keys().cloned().collect();
+        // names is what the TREE, resolve() and the graph read. A cloud-only
+        // note belongs there — the user can see it and link to it — even though
+        // `notes` (the parsed content) has no entry for it yet.
+        let mut names: Vec<String> = self.notes.keys().cloned().collect();
+        for c in &self.cloud {
+            if !self.notes.contains_key(c) {
+                names.push(c.clone());
+            }
+        }
+        names.sort();
+        self.names = names;
         self.res = suffix_map(&self.names);
     }
 
@@ -1050,4 +1106,63 @@ pub fn link_mention(content: &str, base: &str, line: u32, col: u32, len: u32) ->
     let nl = format!("{}[[{}]]{}", &l[..a], hit, &l[b..]);
     lines[line as usize] = &nl;
     Some(lines.join("\n"))
+}
+
+/* iCloud placeholders: a note whose bytes are in the cloud must remain VISIBLE
+   and RESOLVABLE (the tree and `[[links]]` keep working) while having no
+   content to parse. These pin the three ways that can go wrong: invisible,
+   duplicated, or a ghost link. */
+#[cfg(test)]
+mod cloud_tests {
+    use super::*;
+    use std::fs;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("idx-cloud-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn icloud_stub_names_only_real_files() {
+        assert_eq!(icloud_stub(".Note.md.icloud"), Some("Note.md"));
+        assert_eq!(icloud_stub(".a.b.md.icloud"), Some("a.b.md"));
+        assert_eq!(icloud_stub("Note.md"), None, "a normal file is not a placeholder");
+        assert_eq!(icloud_stub(".Note.md"), None, "no .icloud suffix");
+        assert_eq!(icloud_stub(".icloud"), None, "no inner name");
+        assert_eq!(icloud_stub("..hidden.md.icloud"), None, "the real name is hidden too");
+        assert_eq!(icloud_stub(".noext.icloud"), None, "no extension");
+    }
+
+    #[test]
+    fn a_cloud_only_note_is_listed_resolvable_and_has_no_content() {
+        let root = tmp("list");
+        fs::write(root.join("Local.md"), "[[Cloud]]").unwrap();
+        // what iCloud leaves behind when it evicts the file
+        fs::write(root.join(".Cloud.md.icloud"), b"").unwrap();
+        let ix = Index::build(&root);
+        assert!(ix.names().iter().any(|n| n == "Cloud"), "the cloud-only note is listed");
+        assert!(ix.names().iter().any(|n| n == "Local"));
+        assert!(ix.is_cloud_only("Cloud"));
+        assert!(!ix.is_cloud_only("Local"));
+        assert_eq!(ix.content("Cloud"), None, "nothing to parse until the bytes are here");
+        // a link to it resolves (not a ghost), so graph and backlinks do not lie
+        assert_eq!(ix.resolve_ix("Cloud"), ix.names().iter().position(|n| n == "Cloud"));
+        assert_eq!(ix.backlinks("Cloud"), vec!["Local".to_string()]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_downloaded_note_and_its_leftover_placeholder_are_one_note() {
+        let root = tmp("both");
+        fs::write(root.join("Both.md"), "body").unwrap();
+        fs::write(root.join(".Both.md.icloud"), b"").unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(ix.names().iter().filter(|n| *n == "Both").count(), 1, "no duplicate row");
+        assert_eq!(ix.content("Both"), Some("body"));
+        assert!(!ix.is_cloud_only("Both"), "real bytes win over the placeholder");
+        assert!(ix.cloud_only().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
 }
