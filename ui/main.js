@@ -68,6 +68,70 @@ const $ = id => document.getElementById(id);
 let PLATFORM = { os: "unknown", mobile: false, can_switch_vault: false,
                  native_folder_picker: false, plugins: true, updater: true };
 
+/* ---- iOS shell helpers (P3 slice 1) -------------------------------------
+   Scoped to PLATFORM.mobile; every caller checks it. Desktop gets none of this
+   behaviour, not a hidden copy of it. */
+function watchViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const apply = () => document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+  vv.addEventListener("resize", apply);
+  vv.addEventListener("scroll", apply);
+  apply();
+}
+
+/* iOS has no contextmenu event. A long press synthesizes one on the pressed
+   element, which is exactly what the tree/tab/bookmark rows already listen for
+   (they set .oncontextmenu), so one gesture reaches every existing menu. */
+function longPressMenus() {
+  let timer = null, el = null, x = 0, y = 0, fired = false;
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  addEventListener("touchstart", ev => {
+    if (ev.touches.length !== 1) { cancel(); return; }
+    el = ev.target; x = ev.touches[0].clientX; y = ev.touches[0].clientY; fired = false;
+    timer = setTimeout(() => {
+      timer = null; fired = true;
+      if (el && el.dispatchEvent) {
+        el.dispatchEvent(new MouseEvent("contextmenu", {
+          bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2,
+        }));
+      }
+    }, 550);
+  }, { capture: true, passive: true });
+  addEventListener("touchmove", ev => {
+    if (ev.touches.length !== 1) return cancel();
+    if (Math.abs(ev.touches[0].clientX - x) > 10 || Math.abs(ev.touches[0].clientY - y) > 10) cancel();
+  }, { capture: true, passive: true });
+  addEventListener("touchend", ev => {
+    cancel();
+    if (fired) { fired = false; ev.preventDefault(); ev.stopPropagation(); }   // no click after the menu
+  }, { capture: true, passive: false });
+  addEventListener("touchcancel", cancel, { capture: true, passive: true });
+}
+
+function syncBackdrop() {
+  const b = $("mback");
+  if (!b) return;
+  const open = ($("side") && !$("side").hidden) || ($("rside") && !$("rside").hidden);
+  b.hidden = !(PLATFORM.mobile && open);
+}
+
+function closeOverlays() {
+  if (!$("side").hidden && sideOpen) return void cmdToggleSide();
+  if (!$("rside").hidden && rightOpen) return void cmdToggleRight();
+  syncBackdrop();
+}
+
+/* After a vault is entered: the drawers start closed, or the note the user
+   opened would be hidden behind them. The workspace may have just re-opened
+   them, which is why this runs LAST. */
+function closeSidebarsMobile() {
+  if (!PLATFORM.mobile) return;
+  sideOpen = false; $("side").hidden = true; $("ldiv").hidden = true;
+  rightOpen = false; $("rside").hidden = true; $("rdiv").hidden = true;
+  syncBackdrop();
+}
+
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
    census silently STALE (the title only moves in updateTitle) — smoke then
    reports the symptom, never the cause. Surface it as [jserr:...]. */
@@ -242,6 +306,7 @@ function cmdToggleSide() {
     sideOpen = !sideOpen;
     $("side").hidden = $("ldiv").hidden = !sideOpen;
     $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
+    syncBackdrop();
     updateTitle();
   });
 }
@@ -320,6 +385,7 @@ async function cmdToggleRight() {
     $("rside").hidden = $("rdiv").hidden = !rightOpen;
     $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
     placeRToggle();
+    syncBackdrop();
     if (rightOpen && !(PVHOST && PVHOST.sideShowing("right"))) setRTab(rTab, false);   // pane content fills in AFTER the toggle paints (not awaited); a plugin pane that was showing stays
     updateTitle();
   });
@@ -11583,6 +11649,9 @@ function base(p) { return p.replace(/\/+$/, "").split("/").pop() || p; }
 
 function showPicker() {
   pmode = null;
+  // iOS: the picker is a full-screen surface below the drawers (z 10 vs 40), so
+  // an open drawer would cover it. Close them first.
+  closeSidebarsMobile();
   $("picker").hidden = false;
   // respinperf: the startscr logo loads when a picker SHOWS, not at every boot. As
   // <img src> in the hidden picker it was fetched during page load of every vault
@@ -11853,6 +11922,10 @@ async function enterVault() {
   // plugin-loader: enabled community plugins load once the vault is on screen (after the boot
   // mark), unawaited. Restricted mode (the default) = one plugins_state call, no plugin code.
   if (window.__osPluginHost && __osPluginHost.boot) __osPluginHost.boot(vaultPath);
+  // iOS: the drawers start closed. The workspace restore above may have opened
+  // them (they are part of the layout), and a drawer over the note the user
+  // just picked is not the state they asked for.
+  closeSidebarsMobile();
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
@@ -12073,6 +12146,18 @@ function sgearTok() {
   // desktop concept and its commands are not registered on iOS; arming it there
   // would only produce rejected invokes and a drag region over the tab bar.
   if (!PLATFORM.mobile) wfArm();
+  if (PLATFORM.mobile) {
+    watchViewport();
+    longPressMenus();
+    const back = $("mback");
+    if (back) back.onclick = closeOverlays;
+    // Picking a note must show it: close the drawer behind the tap. Capture, so
+    // it happens before the row's own handler runs (the row still exists; it is
+    // only hidden, so the bubble phase completes normally).
+    $("side").addEventListener("click", ev => {
+      if (ev.target.closest && ev.target.closest(".trow")) closeOverlays();
+    }, true);
+  }
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";

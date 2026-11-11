@@ -7,7 +7,7 @@
   are welcome to redistribute it under the terms of the GNU GPL version 3 or
   (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
 -->
-<html><head><meta charset="utf-8"><title>Opensidian</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Opensidian</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="plugins/plugins.css"></head>
 <body>
@@ -79,6 +79,7 @@
   <div id="rpane-tags" class="spane" hidden><div class="rhead" id="tagshead"></div><div id="taglist" class="rlist"></div></div>
   <div id="rpane-toc" class="spane" hidden><div id="toclist" class="rlist"></div></div>
 </div>
+<div id="mback" hidden></div>
 <div id="picker" hidden>
   <div id="pcard">
     <button id="p-close" title="Close" hidden><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
@@ -99,7 +100,7 @@
          is what the app stores — no path typing, no directory browser. -->
     <div id="p-native" hidden>
       <div class="prow">
-        <div class="ptext"><b>Choose vault folder</b><span>From Files or iCloud Drive. Opensidian asks once per folder and keeps access with a bookmark.</span></div>
+        <div class="ptext"><b>Choose vault folder</b><span>Files or iCloud Drive. Opensidian asks once per folder and keeps access with a bookmark; iCloud syncs the notes between your devices.</span></div>
         <button id="p-pick">Choose</button>
       </div>
       <div id="p-native-err"></div>

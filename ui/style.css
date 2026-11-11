@@ -1950,3 +1950,80 @@ html[data-platform="ios"] #wrz { display: none !important }
    rhythm so the recents list keeps the text column (#p-actions values above) */
 #p-native { margin: 0 -10px; padding: 0 10px }
 #p-native-err { color: var(--accent-red); font-size: 12px; min-height: 18px }
+
+/* ================= iOS — P3 slice 1 =================
+   Everything below is scoped to `html[data-platform="ios"]` (set from
+   platform_info at boot) or to a coarse pointer. The desktop rules above are
+   untouched: this is an overlay behaviour layer, not a re-layout of a working
+   desktop. What it establishes:
+     - the window IS the screen: no title bar, no resize strips, safe areas
+     - the soft keyboard shrinks the app (--vvh) instead of hiding the caret
+     - both sidebars are overlays with a backdrop; the note keeps full width
+     - finger-sized targets for the chrome people actually press             */
+
+/* Pre-boot: data-platform arrives a few ms after the page parses. A coarse
+   pointer is the same fact and needs no IPC, so the desktop title bar never
+   flashes on a phone — and the rule drops out once the attribute is set, so a
+   touchscreen desktop that reports coarse gets its chrome back. */
+@media (pointer: coarse) {
+  html:not([data-platform]) #wframe,
+  html:not([data-platform]) #wrz { display: none !important }
+}
+
+html[data-platform="ios"] {
+  /* visualViewport height, kept current by main.js. With the keyboard open this
+     is the visible box, so the editor's own scroller shrinks and the caret the
+     user is typing at stays on screen. */
+  height: var(--vvh, 100%);
+}
+html[data-platform="ios"] .app-container {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* the overlay pair: no desktop dividers, both sidebars float over the note */
+html[data-platform="ios"] #ldiv,
+html[data-platform="ios"] #rdiv { display: none !important }
+html[data-platform="ios"] #side {
+  position: fixed; left: 0; top: 0; bottom: 0;
+  width: min(80vw, 340px); max-width: none; z-index: 40;
+  padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  box-shadow: 0 0 24px var(--shadow-popover);
+}
+html[data-platform="ios"] #rside {
+  position: fixed; right: 0; top: 0; bottom: 0;
+  width: min(88vw, 420px); max-width: none; z-index: 40;
+  padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  padding-right: env(safe-area-inset-right);
+  box-shadow: 0 0 24px var(--shadow-popover);
+}
+/* dismisses whichever overlay is open; below the overlays (40) and every modal */
+#mback { position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, .32) }
+#mback[hidden] { display: none }
+
+/* 44px is the smallest comfortable finger target. Desktop density stays as it
+   is — none of these rules apply there. */
+html[data-platform="ios"] #ribbon { gap: 4px; padding: 6px 0 }
+html[data-platform="ios"] #ribbon button { min-width: 40px; min-height: 40px; padding: 10px }
+html[data-platform="ios"] #ribbon button svg { width: 20px; height: 20px }
+html[data-platform="ios"] .stab { flex: 0 0 40px; width: 40px; height: 40px; padding: 9px }
+html[data-platform="ios"] .stab svg { width: 18px; height: 18px }
+html[data-platform="ios"] .tabbar { height: 40px }
+html[data-platform="ios"] .tab { min-height: 40px }
+html[data-platform="ios"] .tab .x { width: 28px; height: 28px }
+html[data-platform="ios"] .tab .x svg { width: 11px; height: 11px }
+html[data-platform="ios"] .modebtn,
+html[data-platform="ios"] .morebtn,
+html[data-platform="ios"] .navbtn { min-height: 40px; padding: 0 12px }
+html[data-platform="ios"] #rtoggle { min-width: 40px; min-height: 40px }
+html[data-platform="ios"] .trow { height: 40px }
+html[data-platform="ios"] .blnote { padding: 10px 8px }
+html[data-platform="ios"] .prow button,
+html[data-platform="ios"] #p-btns button { min-height: 40px }
+html[data-platform="ios"] #p-recent li { min-height: 44px }
+html[data-platform="ios"] body {
+  overscroll-behavior: none;            /* the note scrollers own the rubber band */
+  -webkit-text-size-adjust: 100%;       /* rotation must not re-scale the type */
+  -webkit-tap-highlight-color: transparent;
+}
