@@ -159,14 +159,32 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
             self.pending = { json in box.deliver(json) }
             host.present(picker, animated: true) {
                 VaultBridge.diag("presented")
-                // Record what the sheet actually holds. A cold Files service
-                // shows an EMPTY sheet for a long time before it draws, and this
-                // line is what tells "still starting" apart from "the content
-                // view never arrived".
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    let subs = picker.view.subviews.map { "\(type(of: $0)):\(NSCoder.string(for: $0.frame))" }.joined(separator: " ")
-                    VaultBridge.diag("picker view \(NSCoder.string(for: picker.view.bounds)) subs=[\(subs)]")
+                /* The sheet's CONTENT belongs to another process, so a blank
+                   sheet means one of two things, and they have opposite fixes:
+                     (a) that process has not drawn yet — nothing to fix here;
+                     (b) it drew into a frame we handed it that is wrong (a sheet
+                         whose detent never resolved, a window the user is not
+                         looking at) — that one is ours.
+                   Only the view tree tells them apart, so write it down as it
+                   settles: the first line lands before the content can exist,
+                   the rest follow every five seconds while it is still empty. */
+                let t0 = Date()
+                var polls = 0
+                func dump() {
+                    let subs = picker.view.subviews
+                        .map { "\(type(of: $0)):\(NSCoder.string(for: $0.frame))" }
+                        .joined(separator: " ")
+                    let elapsed = String(format: "%.1f", Date().timeIntervalSince(t0))
+                    let size = NSCoder.string(for: picker.view.bounds)
+                    VaultBridge.diag("picker +\(elapsed)s view=\(size) inWindow=\(picker.view.window != nil) subs=[\(subs)]")
                 }
+                func poll() {
+                    if box.answered || polls > 12 { return }
+                    dump()
+                    polls += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (polls == 1 ? 1.5 : 5)) { poll() }
+                }
+                poll()
             }
         }
         watchMainThread(box)
