@@ -45,6 +45,9 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
     /// at most one picker at a time; set and cleared on the main thread
     private var pending: ((String) -> Void)?
     private var presenting = false
+    /// the window the picker lives in while it is up (see presentPicker); held
+    /// strongly here because UIKit does not retain a window for us
+    private var presenterWindow: UIWindow?
 
     private func held(_ path: String) -> URL? {
         lock.lock()
@@ -118,79 +121,8 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
                 box.deliver(mvError("a folder picker is already open"))
                 return
             }
-            guard let host = VaultBridge.topViewController() else {
-                box.deliver(mvError("no view controller to present the folder picker"))
-                return
-            }
             self.presenting = true
-            let scenes = UIApplication.shared.connectedScenes.map { scene -> String in
-                let kind = scene is UIWindowScene ? "win" : "other"
-                let windows = (scene as? UIWindowScene)?.windows.count ?? -1
-                return "\(kind):\(scene.activationState.rawValue):\(windows)"
-            }.joined(separator: ",")
-            let window = host.viewIfLoaded?.window
-            // Which windows this scene has, and which one we are presenting into:
-            // a sheet presented into a window the user cannot see looks exactly
-            // like a picker that never loaded.
-            let wins = (window?.windowScene?.windows ?? []).map { w -> String in
-                let root = w.rootViewController.map { String(describing: type(of: $0)) } ?? "-"
-                return "\(type(of: w))[\(NSCoder.string(for: w.frame)) key=\(w.isKeyWindow) hidden=\(w.isHidden) lvl=\(w.windowLevel.rawValue) root=\(root)]"
-            }.joined(separator: " ")
-            VaultBridge.diag("present from \(type(of: host)) window=\(window != nil) scene=\(window?.windowScene != nil) frame=\(window.map { NSCoder.string(for: $0.bounds) } ?? "-") app=\(UIApplication.shared.applicationState.rawValue) scenes=[\(scenes)] wins=[\(wins)]")
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
-            picker.delegate = self
-            picker.allowsMultipleSelection = false
-            // pageSheet, and not formSheet: on iPhone 26/27 a form sheet is a
-            // centred CARD, which clips the location list away (the user then sees
-            // only "On My iPhone" and cannot reach iCloud Drive). A page sheet is
-            // the full-width one the system Files app uses. Asking for fullScreen
-            // changes nothing: the picker service renders itself as a sheet, which
-            // is verified in the iOS 27.2 simulator.
-            picker.modalPresentationStyle = .pageSheet
-            picker.shouldShowFileExtensions = true
-            /* A CONCRETE starting directory, not the picker's own "Recents".
-               In folder mode a picker that opens on a root where nothing is
-               selectable shows a live-looking Open button that does nothing when
-               tapped — no delegate call, no dismissal, which is exactly what the
-               device log shows (presented, then silence). Our own Documents is
-               the one directory this app is guaranteed to be able to select, and
-               it is also a real location in Files ("On My iPhone ▸ Opensidian")
-               so the picker service can resolve it. Nothing outside the sandbox
-               here: pointing directoryURL at an iCloud path we cannot read made
-               iOS wait on it instead of falling back, and the picker hung. */
-            picker.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            let start = picker.directoryURL?.path ?? "-"
-            VaultBridge.diag("picker start=\(start) exists=\(FileManager.default.fileExists(atPath: start))")
-            self.pending = { json in box.deliver(json) }
-            host.present(picker, animated: true) {
-                VaultBridge.diag("presented")
-                /* The sheet's CONTENT belongs to another process, so a blank
-                   sheet means one of two things, and they have opposite fixes:
-                     (a) that process has not drawn yet — nothing to fix here;
-                     (b) it drew into a frame we handed it that is wrong (a sheet
-                         whose detent never resolved, a window the user is not
-                         looking at) — that one is ours.
-                   Only the view tree tells them apart, so write it down as it
-                   settles: the first line lands before the content can exist,
-                   the rest follow every five seconds while it is still empty. */
-                let t0 = Date()
-                var polls = 0
-                func dump() {
-                    let subs = picker.view.subviews
-                        .map { "\(type(of: $0)):\(NSCoder.string(for: $0.frame))" }
-                        .joined(separator: " ")
-                    let elapsed = String(format: "%.1f", Date().timeIntervalSince(t0))
-                    let size = NSCoder.string(for: picker.view.bounds)
-                    VaultBridge.diag("picker +\(elapsed)s view=\(size) inWindow=\(picker.view.window != nil) subs=[\(subs)]")
-                }
-                func poll() {
-                    if box.answered || polls > 12 { return }
-                    dump()
-                    polls += 1
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (polls == 1 ? 1.5 : 5)) { poll() }
-                }
-                poll()
-            }
+            self.presentPicker(box)
         }
         watchMainThread(box)
         /* Half an hour, not five minutes: the user may leave the sheet open while
@@ -206,6 +138,97 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
         return answer
     }
 
+    /// Present the picker in a window of this app's OWN.
+    ///
+    /// The sheet has two reported failures that look alike from the outside: a
+    /// blank sheet while the system's Files process starts (nothing to fix here),
+    /// and a sheet that draws, navigates, cancels — but whose Open button never
+    /// calls the delegate for ANY folder, iCloud or local, armed (blue) or not.
+    /// The second one is about the presentation, not the provider: this app's
+    /// window is a WKWebView inside tao's view controller, adopted by a scene
+    /// after launch, and a picker hosted on that hierarchy is the long-standing
+    /// case where the action is dropped. A fresh, empty window gives the sheet a
+    /// host with nothing else in it.
+    private func presentPicker(_ box: ResultBox) {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let live = scenes.filter { $0.activationState == .foregroundActive }
+        guard let scene = (live.isEmpty ? scenes : live).first else {
+            box.deliver(mvError("no window scene to present the folder picker"))
+            return
+        }
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .alert + 1
+        window.backgroundColor = .clear
+        let root = UIViewController()
+        root.view.backgroundColor = .clear
+        window.rootViewController = root
+        window.makeKeyAndVisible()
+        presenterWindow = window
+
+        let states = scenes.map { "\($0.activationState.rawValue):\($0.windows.count)" }.joined(separator: ",")
+        VaultBridge.diag("present window=\(NSCoder.string(for: window.bounds)) scene=\(scene.activationState.rawValue) scenes=[\(states)] app=\(UIApplication.shared.applicationState.rawValue)")
+
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        // pageSheet, and not formSheet: on iPhone 26/27 a form sheet is a centred
+        // CARD, which clips the location list away (the user then sees only
+        // "On My iPhone" and cannot reach iCloud Drive). Asking for fullScreen
+        // changes nothing: the picker service renders itself as a sheet.
+        picker.modalPresentationStyle = .pageSheet
+        picker.shouldShowFileExtensions = true
+        /* A CONCRETE starting directory, not the picker's own "Recents": a picker
+           that opens on a root where nothing is selectable shows a live-looking
+           button and a dead tap. Our own Documents is the one directory this app
+           is guaranteed to be able to select, and it is a real location in Files
+           ("On My iPhone ▸ Opensidian"). Nothing outside the sandbox: pointing
+           directoryURL at an iCloud path we cannot read made iOS wait on it
+           instead of falling back, and the picker froze. */
+        picker.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        let start = picker.directoryURL?.path ?? "-"
+        VaultBridge.diag("picker start=\(start) exists=\(FileManager.default.fileExists(atPath: start))")
+
+        self.pending = { json in box.deliver(json) }
+        root.present(picker, animated: true) {
+            VaultBridge.diag("presented")
+            /* The sheet's CONTENT belongs to another process, so its view tree is
+               the only in-process evidence of what the user is looking at: write it
+               down as it settles, before content can exist and then every five
+               seconds while the sheet is still up. */
+            let t0 = Date()
+            var polls = 0
+            func dump() {
+                let subs = picker.view.subviews
+                    .map { "\(type(of: $0)):\(NSCoder.string(for: $0.frame))" }
+                    .joined(separator: " ")
+                let elapsed = String(format: "%.1f", Date().timeIntervalSince(t0))
+                let size = NSCoder.string(for: picker.view.bounds)
+                VaultBridge.diag("picker +\(elapsed)s view=\(size) inWindow=\(picker.view.window != nil) subs=[\(subs)]")
+            }
+            func poll() {
+                if box.answered || polls > 12 { return }
+                dump()
+                polls += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + (polls == 1 ? 1.5 : 5)) { poll() }
+            }
+            poll()
+        }
+    }
+
+    /// Give the key back and let the sheet finish dismissing first: hiding the
+    /// window underneath a sheet mid-animation is what a flicker (or a stranded
+    /// sheet) looks like.
+    private func closePresenterWindow() {
+        guard let window = presenterWindow else { return }
+        presenterWindow = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            window.isHidden = true
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let others = scenes.flatMap { $0.windows }.filter { $0 !== window && $0.rootViewController != nil }
+            others.first(where: { $0.windowLevel == .normal && !$0.isHidden })?.makeKey()
+        }
+    }
+
     /// a picker that never called back must not lock every later attempt behind
     /// "already open": clear the in-flight state when the wait expires
     private func expired() {
@@ -219,6 +242,7 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
         let cb = pending
         pending = nil
         presenting = false
+        closePresenterWindow()
         cb?(json)
     }
 
@@ -352,22 +376,6 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
         }
     }
 
-    // MARK: presentation
-
-    private static func topViewController() -> UIViewController? {
-        // Only scenes that are actually on screen can present: an inactive scene's
-        // window is not in the responder chain, and presenting from it yields a
-        // sheet with the wrong geometry (or none at all).
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let live = scenes.filter { $0.activationState == .foregroundActive }
-        let windows = (live.isEmpty ? scenes : live).flatMap { $0.windows }
-        let window = windows.first { $0.isKeyWindow } ?? windows.first
-        var top = window?.rootViewController
-        while let next = top?.presentedViewController {
-            top = next
-        }
-        return top
-    }
 }
 
 /// A box the main thread writes and the waiting thread reads after the
