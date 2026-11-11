@@ -123,22 +123,33 @@ pub fn adopt_folder(path: &Path) -> Result<Picked, String> {
 /// over: on iOS 27 a picker that draws, navigates and cancels can still never
 /// call `didPickDocumentsAt`, for local and iCloud folders alike. Notes under
 /// this root stay on the device; syncing still needs a folder the picker gave us.
-/// The vault the app can open with no help from the system: its own iCloud
-/// container when iCloud Drive is available (that one SYNCS), else a folder
-/// inside the sandbox. `Err` only when neither exists, with the bridge's reason.
-pub fn own_vault_dir() -> Result<PathBuf, String> {
+/// Every folder the app owns, best first: the iCloud container (it SYNCS), the
+/// sandbox `Documents/Vault`, and `Documents` itself — which is where a vault
+/// dragged into "On My iPhone ▸ Opensidian" actually lands.
+pub fn own_vault_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
     match answer(opensidian_mobilevault::icloud_documents()) {
-        Ok(v) => match v["path"].as_str() {
-            Some(p) => Ok(PathBuf::from(p)),
-            None => local_vault_dir(),
-        },
-        Err(why) => {
-            // No iCloud: the local folder still works, and saying which one we
-            // opened matters more than failing the button.
-            diag(&format!("icloud unavailable: {why}"));
-            local_vault_dir()
+        Ok(v) => {
+            if let Some(p) = v["path"].as_str() {
+                out.push(PathBuf::from(p));
+            }
         }
+        // No iCloud (no entitlement in the signature, signed out, Drive off): the
+        // sandbox folders still work, and the reason belongs in the log.
+        Err(why) => diag(&format!("icloud unavailable: {why}")),
     }
+    if let Ok(local) = local_vault_dir() {
+        if let Some(docs) = local.parent() {
+            out.push(docs.to_path_buf());
+        }
+        out.push(local);
+    }
+    out
+}
+
+/// The first folder the app owns, or `Err` when the platform has none.
+pub fn own_vault_dir() -> Result<PathBuf, String> {
+    own_vault_candidates().into_iter().next().ok_or_else(|| "this app has no folder of its own".to_string())
 }
 
 pub fn local_vault_dir() -> Result<PathBuf, String> {

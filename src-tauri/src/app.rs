@@ -1781,6 +1781,12 @@ fn is_own_vault(p: &Path) -> bool {
     cfg!(target_os = "ios") && own_vault_tails(p)
 }
 
+/// The folder the app opened last time as its OWN (see bind_own_vault). It is a
+/// path, not a bookmark: the app owns these folders, so it needs no permission.
+fn own_vault_record() -> Option<String> {
+    cfg_value()["own"].as_str().map(|s| s.to_string())
+}
+
 /// The two folders the app owns, by TAIL (a container loses its UUID on a restored
 /// backup, and the ubiquity container's directory name is fixed by its identifier):
 /// the sandbox folder, and the app's own iCloud Drive container.
@@ -1797,8 +1803,10 @@ fn ios_boot_restore(stored: PathBuf) -> Option<PathBuf> {
     // the container is not guaranteed to keep its UUID.
     // A folder the app owns needs no bookmark, only the path — and only while it
     // still exists. A container that moved (restored backup) falls through to the
-    // picker's notice, where the own-folder button is one tap away.
-    if is_own_vault(&stored) && stored.is_dir() {
+    // picker's notice, where the own-folder button is one tap away. The recorded
+    // path is the authoritative list of "the app's own" folders: it covers the
+    // container, the sandbox vault and the sandbox root alike.
+    if stored.is_dir() && (is_own_vault(&stored) || own_vault_record() == Some(stored.display().to_string())) {
         return Some(stored);
     }
     let key = stored.display().to_string();
@@ -2112,8 +2120,53 @@ fn adopt_opened(_app: &tauri::AppHandle, _urls: Vec<tauri::Url>) {}
 /// `url(forUbiquityContainerIdentifier:)` BLOCKS, so this is spawned off the UI.
 #[tauri::command]
 async fn ios_own_vault(app: tauri::AppHandle, v: State<'_, Vault>) -> Result<String, String> {
-    let dir = tauri::async_runtime::spawn_blocking(platform::own_vault_dir).await.map_err(|e| e.to_string())??;
-    bind_own_vault(&app, &v, &dir)
+    let candidates = tauri::async_runtime::spawn_blocking(platform::own_vault_candidates).await.map_err(|e| e.to_string())?;
+    if candidates.is_empty() {
+        return Err("this app has no folder of its own".into());
+    }
+    /* Open the first candidate that actually HOLDS NOTES. A vault copied into one
+       of the app's folders and opened from another looks exactly like a bug ("my
+       notes are gone"), and both folders are one tap apart in Files. When none has
+       notes yet the first candidate wins, which is the synced one. */
+    let mut chosen = candidates[0].clone();
+    for c in &candidates {
+        let n = note_count(c);
+        platform::diag(&format!("own vault candidate {} notes={n}", c.display()));
+        if n > 0 {
+            chosen = c.clone();
+            break;
+        }
+    }
+    bind_own_vault(&app, &v, &chosen)
+}
+
+/// Notes anywhere below `dir`, counted to a small cap: this runs before the UI on
+/// a folder that may be a whole iCloud container, so it is a bounded walk, not the
+/// index.
+fn note_count(dir: &Path) -> usize {
+    let mut found = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(d) = stack.pop() {
+        visited += 1;
+        if visited > 500 || found >= 200 {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;   // .obsidian, .trash: configuration, not notes
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(e.path());
+            } else if name.ends_with(".md") {
+                found += 1;
+            }
+        }
+    }
+    found
 }
 
 fn bind_own_vault(app: &tauri::AppHandle, v: &Vault, dir: &Path) -> Result<String, String> {
@@ -2122,6 +2175,10 @@ fn bind_own_vault(app: &tauri::AppHandle, v: &Vault, dir: &Path) -> Result<Strin
     bind_vault(v, dir)?;
     maybe_spawn_fill(app, v);
     persist_vault(dir);
+    // Recorded by PATH, so the next launch knows this vault is the app's own and
+    // needs no bookmark — whatever shape the path has (sandbox, container, or the
+    // container's Documents directory).
+    cfg_set("own", serde_json::json!(dir.display().to_string()));
     platform::diag(&format!("own vault: bound {}", dir.display()));
     Ok(dir.to_string_lossy().into_owned())
 }
@@ -2130,7 +2187,7 @@ fn bind_own_vault(app: &tauri::AppHandle, v: &Vault, dir: &Path) -> Result<Strin
 async fn ios_restore_vault(app: tauri::AppHandle, path: String) -> Result<String, String> {
     // From the recents list: a folder the app owns has no bookmark (a picked one
     // always does, so this cannot hijack a real iCloud vault).
-    if bookmark_get(&path).is_none() && is_own_vault(Path::new(&path)) {
+    if bookmark_get(&path).is_none() && (is_own_vault(Path::new(&path)) || own_vault_record().as_deref() == Some(path.as_str())) {
         return bind_own_vault(&app, &app.state::<Vault>(), Path::new(&path));
     }
     let saved = bookmark_get(&path).ok_or_else(|| format!("{path}: no saved bookmark — choose the folder again"))?;
@@ -12398,6 +12455,25 @@ mod own_vault_tests {
         assert!(!own_vault_tails(Path::new("/a/b/Documents")), "the parent is not enough");
         assert!(!own_vault_tails(Path::new("/a/b/Vault")), "the name alone is not ours");
         assert!(!own_vault_tails(Path::new("/a/iCloud~dev~koto~opensidian/Documents/x.md")), "a note inside is not the root");
+    }
+
+    /* Which of the app's own folders gets opened is decided by "does it hold
+       notes": a vault copied into one of them and opened from another looks like
+       lost data. Configuration directories are not notes, and neither is a file
+       without the extension. */
+    #[test]
+    fn only_a_folder_with_notes_counts_as_the_vault() {
+        let root = std::env::temp_dir().join(format!("opensidian-notecount-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), b"{}").unwrap();
+        assert_eq!(note_count(&root), 0, "a configuration folder is not a note");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/note.md"), b"# hi").unwrap();
+        assert_eq!(note_count(&root), 1, "a note in a subfolder still counts");
+        fs::write(root.join("readme.txt"), b"not a note").unwrap();
+        assert_eq!(note_count(&root), 1, "only .md counts");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /* The gate is the platform, not the path: on desktop a directory that happens
