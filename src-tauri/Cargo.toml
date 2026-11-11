@@ -5,18 +5,29 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 # lib.rs: the pure parse/normalize modules (vaultfs, outline, index, graphq,
-# canvasfs, datefmt) as a tauri-free library so fuzz/ can link them. The bin
-# (main.rs) keeps its name "opensidian" and uses this lib.
+# canvasfs, datefmt) as a tauri-free library so fuzz/ can link them, PLUS the
+# app layer behind the default `app` feature. The bin (main.rs) keeps its name
+# "opensidian", is a one-line caller, and stays the desktop entry point.
+#
+# crate-type: Tauri mobile links a STATIC library (iOS) and, on Android, a
+# cdylib; `rlib` keeps the desktop bin and fuzz/ linking by path. All three are
+# declared here because Cargo has no per-target crate-type.
 [lib]
 name = "opensidian_lib"
 path = "src/lib.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 # goal devui — DEV-ONLY UI hot reload (src/devui.rs). NOT in default and never to be:
-# a default build compiles none of it (main.rs gates every call site), test
+# a default build compiles none of it (app.rs gates every call site), test
 # devui_guard asserts both, and the box release guard refuses a binary carrying
 # devui::MARKER. No dependency: it uses only std + tauri, already linked.
+#
+# app: the tauri application layer (src/app.rs). ON by default so the desktop
+# bin and the normal build are unchanged; fuzz/Cargo.toml sets
+# default-features = false and links only the pure modules below.
 [features]
-default = []
+default = ["app"]
+app = []
 devui = []
 
 [build-dependencies]
@@ -40,7 +51,6 @@ regex = "=1.13.1"
 # renderer-crates.txt, all >= 6 weeks old, resolved with --precise pins (never
 # "latest"). Design: harness docs/recon-pdfembed/README.md "security design".
 hayro = "=0.7.1"
-landlock = "=0.4.7"
 # vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
 # follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`
 # pins it to that exact version, so the lock gains no package.
@@ -71,6 +81,11 @@ ed25519-compact = { version = "=2.4.2", default-features = false }
 # that is not tauri's gdk would hand us a DIFFERENT GdkDisplay type and the
 # downcast that detects X11-vs-Wayland would silently answer "wayland" everywhere.
 [target.'cfg(target_os = "linux")'.dependencies]
+# Landlock is a Linux LSM: the crate does not build for Apple/Android targets at
+# all, and sandbox.rs compiles a no-op stub there (iOS/Android already run inside
+# the OS app sandbox). Same `=` pin, same locked version; the dependency simply
+# stops being fetched on targets where the syscall does not exist.
+landlock = "=0.4.7"
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
 # spawn-consent: the native trust / run-program prompts (src/consent.rs) are

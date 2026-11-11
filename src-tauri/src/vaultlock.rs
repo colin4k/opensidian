@@ -214,6 +214,7 @@ pub(crate) mod tests {
         assert_eq!(fs::read_to_string(lock_file(&locks, &canon)).unwrap().trim_end(), canon.to_str().unwrap());
     }
 
+    #[cfg(target_os = "linux")] // drives the real `flock` CLI, which is util-linux, not Darwin
     #[test]
     fn vaultlock_contention_across_processes() {
         // a real second PROCESS holds the lock: flock(1) from util-linux on the

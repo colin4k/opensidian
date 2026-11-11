@@ -21,10 +21,17 @@
    the vault, with one exception: create_vault makes the new folder and its
    Welcome.md seed before the restart. That is the folder the user asked for.
    boot_pick_must_restart() is that decision as a pure function. */
+#[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
+    RulesetAttr, RulesetCreatedAttr, ABI,
 };
+// Re-exported under one name for both targets: on Linux this IS
+// landlock::RulesetStatus, on Apple/Android it is the local two-variant stub
+// below. Tests and call sites match `sandbox::RulesetStatus::NotEnforced`
+// without caring which.
+#[cfg(target_os = "linux")]
+pub use landlock::RulesetStatus;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -190,6 +197,7 @@ pub fn ruleset_plan(disabled: bool, home: &Path, vault: &Path) -> Option<Ruleset
     })
 }
 
+#[cfg(target_os = "linux")]
 pub fn enforce(vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
     let off = no_landlock_requested();
     if off {
@@ -254,7 +262,28 @@ pub fn enforce(vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>
     Ok(status.ruleset)
 }
 
-#[cfg(test)]
+/* NOT LINUX = NO LANDLOCK. Apple targets (iOS) and Android do not have the LSM,
+   and the landlock crate does not build there at all (Cargo.toml: it is a
+   linux-only dependency). The process already lives inside the platform app
+   sandbox, which is containment we cannot loosen from here — so the honest
+   answer is a no-op with the SAME public shape, not a cfg at every call site.
+
+   `landlock_enabled()` reads the same opt-in switches and is therefore always
+   false on these targets (nobody exports OPENSIDIAN_LANDLOCK inside an iOS
+   app), so this function is unreachable in practice; it exists so the one
+   `eprintln!("landlock: {s:?}")` in run() compiles unchanged. */
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesetStatus {
+    NotEnforced,
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn enforce(_vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
+    Ok(RulesetStatus::NotEnforced)
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::fs;

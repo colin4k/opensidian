@@ -449,7 +449,7 @@ fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::
     let _ = tx.send(Answer::No);
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))] // gtk dialogs + the Linux spawn path
 mod tests {
     use super::*;
 

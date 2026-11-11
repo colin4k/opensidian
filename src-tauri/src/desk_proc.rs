@@ -311,6 +311,35 @@ pub struct Pinned {
 }
 
 /// Y1: fstat of an open fd as an Ident. Async-signal-safe (fstat, no allocation): pre_exec uses it
+/* PORTABILITY (iOS/macOS compile): Linux holds an fd to the object itself with
+   O_PATH and names it through /proc/self/fd/N. Apple has neither, so the two
+   shims below keep this module COMPILING for the mobile target. They are not a
+   claim that process spawning works there: iOS forbids fork/exec of a helper,
+   the mobile command set does not expose desk_* at all, and P2 removes it.
+
+   O_RDONLY|O_NONBLOCK instead of O_PATH: O_NOFOLLOW still refuses a symlink,
+   O_NONBLOCK keeps a FIFO from blocking the open, and the fstat type check in
+   each caller refuses anything that is not the regular file / directory it
+   wants. */
+#[cfg(target_os = "linux")]
+const fn hold_open_flags() -> libc::c_int {
+    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC
+}
+#[cfg(not(target_os = "linux"))]
+const fn hold_open_flags() -> libc::c_int {
+    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK
+}
+
+/// the kernel's name for the open file behind `fd`
+#[cfg(target_os = "linux")]
+fn fd_path(fd: std::os::fd::RawFd) -> String {
+    format!("/proc/self/fd/{fd}")
+}
+#[cfg(not(target_os = "linux"))]
+fn fd_path(fd: std::os::fd::RawFd) -> String {
+    format!("/dev/fd/{fd}")
+}
+
 fn fd_ident(fd: std::os::fd::RawFd) -> Option<Ident> {
     let mut st = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: fstat writes a struct stat into st; read only on success
@@ -335,16 +364,16 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let c = std::ffi::CString::new(file).map_err(|_| format!("EINVAL: spawn {file}: NUL in the path"))?;
     // SAFETY: c is a valid C string; the fd is owned from here on
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    let fd = unsafe { libc::open(c.as_ptr(), hold_open_flags()) };
     if fd < 0 {
         return Err(format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()))?;
-    if ident.mode & libc::S_IFMT != libc::S_IFREG || ident.mode & 0o111 == 0 {
+    if ident.mode & libc::S_IFMT as u32 != libc::S_IFREG as u32 || ident.mode & 0o111 == 0 {
         return Err(format!("EACCES: spawn {file}: not a regular executable file"));
     }
-    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn {file}: {e}"))?;
+    let at = std::fs::read_link(fd_path(fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn {file}: {e}"))?;
     if at.as_os_str() != OsStr::new(file) {
         return Err(format!("EAGAIN: spawn {file}: the file opened is {} (moved while it was opened); nothing asked", at.display()));
     }
@@ -372,16 +401,16 @@ pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: spawn: cwd {}: NUL in the path", dir.display()))?;
     // SAFETY: c is a valid C string; the fd is owned from here on
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    let fd = unsafe { libc::open(c.as_ptr(), hold_open_flags() | libc::O_DIRECTORY) };
     if fd < 0 {
         return Err(format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()))?;
-    if ident.mode & libc::S_IFMT != libc::S_IFDIR {
+    if ident.mode & libc::S_IFMT as u32 != libc::S_IFDIR as u32 {
         return Err(format!("ENOTDIR: spawn: cwd {} is not a directory", dir.display()));
     }
-    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn: cwd {}: {e}", dir.display()))?;
+    let at = std::fs::read_link(fd_path(fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn: cwd {}: {e}", dir.display()))?;
     if at.as_os_str() != dir.as_os_str() {
         return Err(format!("EAGAIN: spawn: cwd {}: the directory opened is {} (moved while it was opened); nothing asked", dir.display(), at.display()));
     }
@@ -455,7 +484,7 @@ fn lexical(p: &Path) -> PathBuf {
 /// S3 + V1: the directory the child may look programs up in for `dir` (an absolute PATH
 /// entry): its canonical form, or None = drop the entry
 fn path_dir_ok(dir: &Path, confine: &[&Path]) -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))] // the gate hook lives in the linux-only test module
     tests::q1_gate(dir);
     let canon = dir.canonicalize().ok().filter(|c| c.is_absolute() && !c.as_os_str().as_bytes().contains(&b':'))?;
     let forms = [lexical(dir), canon.clone()];
@@ -547,7 +576,7 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     let want = prog.ident.clone();
     let d = dir.raw();
     let dwant = dir.ident.clone();
-    let mut c = Command::new(format!("/proc/self/fd/{n}"));
+    let mut c = Command::new(fd_path(n));
     c.arg0(sp.argv0.as_deref().unwrap_or(&sp.file));
     c.args(&sp.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
@@ -559,13 +588,19 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
         c.pre_exec(move || {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
-            if libc::getppid() == 1 {
-                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+            // Linux-only: PDEATHSIG and close_range do not exist on Apple. This
+            // build never execs (iOS forbids it); the block is compiled out, not
+            // reimplemented, so nothing here pretends to be a sandbox.
+            #[cfg(target_os = "linux")]
+            {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
+                if libc::getppid() == 1 {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
+                // pipe, which a plain close_range would cut (spawn would "succeed")
+                libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
             }
-            // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
-            // pipe, which a plain close_range would cut (spawn would "succeed")
-            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
             // Y1: the program's fd survives the exec (a #! interpreter opens /proc/self/fd/N),
             // and the open file is still the one pinned before the question — else EPERM, no exec
             if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
@@ -943,16 +978,16 @@ fn ident_of(p: &Path) -> Result<Ident, String> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: {}: NUL in the path", p.display()))?;
     // SAFETY: c is a valid C string; the fd is owned from here on
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    let fd = unsafe { libc::open(c.as_ptr(), hold_open_flags()) };
     if fd < 0 {
         return Err(format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let id = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()))?;
-    if id.mode & libc::S_IFMT == libc::S_IFLNK {
+    if id.mode & libc::S_IFMT as u32 == libc::S_IFLNK as u32 {
         return Err(format!("ELOOP: {} is a symlink (swapped in after it was resolved); not opened", p.display()));
     }
-    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
+    let at = std::fs::read_link(fd_path(fd.as_raw_fd())).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
     if at.as_os_str() != p.as_os_str() {
         return Err(format!("EAGAIN: {}: the object opened is {} (a directory on the way was swapped); not opened", p.display(), at.display()));
     }
@@ -995,7 +1030,7 @@ impl Local {
     /// the dialog is open), which is not a swap. Files keep the full identity.
     pub fn recheck(&self) -> Result<(), String> {
         let Some(was) = &self.ident else { return Ok(()) };
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "linux"))] // the gate hook lives in the linux-only test module
         tests::bb1_gate(Path::new(&self.arg)); // BB1 probe: a lookup that stands still
         match ident_of(Path::new(&self.arg)) {
             Ok(now) if now.same_as(was) => Ok(()),
@@ -1008,7 +1043,7 @@ impl Local {
 impl Ident {
     /// R1: a directory is compared on (dev, ino, mode) only; anything else on all of it
     fn same_as(&self, was: &Ident) -> bool {
-        if was.mode & libc::S_IFMT == libc::S_IFDIR {
+        if was.mode & libc::S_IFMT as u32 == libc::S_IFDIR as u32 {
             return (self.dev, self.ino, self.mode) == (was.dev, was.ino, was.mode);
         }
         self == was
@@ -1121,7 +1156,7 @@ pub struct Launch<'a> {
 impl Launch<'_> {
     /// AA1: what the caller's opener Command is made from: the held opener's fd, never its name
     pub fn program(&self) -> String {
-        format!("/proc/self/fd/{}", self.prog.raw())
+        fd_path(self.prog.raw())
     }
 
     /// the target, the cwd and the cleaned PATH, onto the caller's opener Command (made from
@@ -1249,7 +1284,7 @@ pub fn fs_work_count() -> usize {
     FS_WORK.with(|c| c.get())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))] // spawns helpers and reads /proc: Linux-behaviour only
 mod tests {
     use super::*;
 

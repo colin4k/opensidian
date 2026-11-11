@@ -179,6 +179,36 @@ fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
     if r < 0 { Err(io::Error::last_os_error()) } else { Ok(r) }
 }
 
+/// atomic rename that REFUSES an existing target name.
+/// Linux has renameat2(…, RENAME_NOREPLACE); Apple has the fd-relative
+/// renameatx_np(…, RENAME_EXCL) (macOS 10.12 / iOS 10). NOT renamex_np: that
+/// takes two full paths and would lose the "same parent dir fd" property the
+/// import path is built on.
+#[cfg(target_vendor = "apple")]
+fn rename_noreplace(dfd: RawFd, from: &CString, to: &CString) -> io::Result<()> {
+    // SAFETY: valid fd + NUL-terminated names
+    cvt(unsafe { libc::renameatx_np(dfd, from.as_ptr(), dfd, to.as_ptr(), libc::RENAME_EXCL) })
+        .map(|_| ())
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn rename_noreplace(dfd: RawFd, from: &CString, to: &CString) -> io::Result<()> {
+    // SAFETY: valid fd + NUL-terminated names
+    cvt(unsafe { libc::renameat2(dfd, from.as_ptr(), dfd, to.as_ptr(), libc::RENAME_NOREPLACE) })
+        .map(|_| ())
+}
+
+/// "this filesystem cannot do NOREPLACE at all" — fall back to linkat, which
+/// also refuses an existing name. Darwin keeps ENOTSUP (45) and EOPNOTSUPP
+/// (102) as DIFFERENT values, so the Linux-shaped list alone would turn a
+/// renameatx_np ENOTSUP into a hard import failure. Integer compares on
+/// purpose: two equal-valued consts in one `matches!` are an unreachable
+/// pattern on Linux.
+fn no_noreplace_support(e: &io::Error) -> bool {
+    let Some(code) = e.raw_os_error() else { return false };
+    code == libc::EINVAL || code == libc::ENOSYS || code == libc::EOPNOTSUPP || code == libc::ENOTSUP
+}
+
 fn stat_at(dfd: RawFd, name: &CString) -> io::Result<libc::stat> {
     let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: valid fd, NUL-terminated name, st is written by the kernel on success
@@ -607,9 +637,9 @@ impl Vault {
                 Err(_) => continue,
             };
             // SAFETY: valid fd + NUL-terminated names
-            let r = cvt(unsafe { libc::renameat2(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), libc::RENAME_NOREPLACE) });
+            let r = rename_noreplace(dfd, &tmp, &cn);
             let r = match r {
-                Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
+                Err(e) if no_noreplace_support(&e) => {
                     // no NOREPLACE here: link(2) refuses an existing name too
                     cvt(unsafe { libc::linkat(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), 0) }).map(|_| {
                         unstage();
@@ -910,14 +940,49 @@ impl Vault {
     pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
         let (d, leaf) = self.parent(rel, false)?;
         // SAFETY: valid fd + NUL-terminated name; the fd is owned below
-        let raw = cvt(unsafe { libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
+        let raw = match cvt(unsafe { libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), hold_open_flags()) }) {
+            Ok(fd) => fd,
+            // Apple: O_NOFOLLOW refuses the symlink AT THE OPEN (ELOOP), while
+            // Linux's O_PATH opens the link itself and pstat_of refuses it a
+            // line later. Same stable "vault escape" refusal either way — a
+            // caller must not see a raw errno just because the OS skipped ahead.
+            #[cfg(target_vendor = "apple")]
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(refused(rel, "symlink in vault path")),
+            Err(e) => return Err(e),
+        };
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
         pstat_of(rel, &fstat(fd.as_raw_fd())?)?; // symlink, FIFO, device, socket -> refused
         hook("p_chmod:opened");
-        let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
-        // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
-        cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+        chmod_held(&fd, mode)
     }
+}
+
+/* PORTABILITY: the fd above must name the object itself, never a path that is
+   walked again. Linux opens O_PATH and then goes through /proc/self/fd/N,
+   because fchmod on an O_PATH fd is EBADF. Apple has neither O_PATH nor
+   /proc: O_RDONLY|O_NOFOLLOW (plus O_NONBLOCK so a FIFO cannot block the open,
+   which the fstat type check then refuses) gives a real fd, and fchmod on it
+   is exactly "change the inode I hold". */
+#[cfg(target_os = "linux")]
+const fn hold_open_flags() -> libc::c_int {
+    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC
+}
+#[cfg(not(target_os = "linux"))]
+const fn hold_open_flags() -> libc::c_int {
+    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK
+}
+
+#[cfg(target_os = "linux")]
+fn chmod_held(fd: &OwnedFd, mode: u32) -> io::Result<()> {
+    let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
+    // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
+    cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn chmod_held(fd: &OwnedFd, mode: u32) -> io::Result<()> {
+    // SAFETY: valid fd
+    cvt(unsafe { libc::fchmod(fd.as_raw_fd(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1074,35 +1139,45 @@ pub fn mkdir_p(root: &Path, rel: &Path) -> io::Result<()> {
 /// tree walk that never descends a symlinked directory (audit #9) — the same
 /// boundary the note index draws with symlink_metadata. `out` gets every
 /// non-hidden real directory's vault-relative path, depth first. Real dirs
-/// cannot cycle; MAX_WALK_DEPTH still bounds the recursion (stack) against
-/// a deliberately deep tree.
+/// cannot cycle; MAX_WALK_DEPTH bounds the walk against a deliberately deep
+/// tree.
+///
+/// EXPLICIT STACK, not recursion. The cap is about the TREE, not the machine
+/// stack: 256 frames of read_dir + DirEntry are ~2 MiB in a debug build, and an
+/// iOS thread starts with 512 KiB (main thread 1 MiB) — the test below proved
+/// it by overflowing on Darwin. An explicit worklist keeps the same cap with
+/// O(depth) heap. Sibling order is whatever read_dir returned; every caller
+/// sorts (list_folders_in) or only counts.
 pub fn walk_real_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
-    walk_real_dirs_at(dir, base, out, 0)
+    let mut work: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+    while let Some((d, depth)) = work.pop() {
+        if depth >= MAX_WALK_DEPTH {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let mut kids: Vec<PathBuf> = Vec::new();
+        for e in rd.flatten() {
+            if e.file_name().as_bytes().first() == Some(&b'.') {
+                continue;
+            }
+            // DirEntry::file_type does NOT follow symlinks: a symlinked dir is
+            // a symlink here, and is skipped
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let p = e.path();
+            if let Ok(rel) = p.strip_prefix(base) {
+                out.push(rel.display().to_string());
+            }
+            kids.push(p);
+        }
+        for p in kids.into_iter().rev() {
+            work.push((p, depth + 1));
+        }
+    }
 }
 
 pub const MAX_WALK_DEPTH: usize = 256;
-
-fn walk_real_dirs_at(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
-    if depth >= MAX_WALK_DEPTH {
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        if e.file_name().as_bytes().first() == Some(&b'.') {
-            continue;
-        }
-        // DirEntry::file_type does NOT follow symlinks: a symlinked dir is
-        // a symlink here, and is skipped
-        if !e.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let p = e.path();
-        if let Ok(rel) = p.strip_prefix(base) {
-            out.push(rel.display().to_string());
-        }
-        walk_real_dirs_at(&p, base, out, depth + 1);
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -342,7 +342,7 @@ pub(crate) async fn secrets_op(
     r.map_err(|e| e.to_string())?
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))] // dbus Secret Service: no such service on Darwin
 mod tests {
     use super::*;
 

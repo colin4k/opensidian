@@ -234,7 +234,7 @@ pub fn open_in_new_process(vault: &Path, sw: Option<&Switch>) -> Result<u32, Str
     Ok(pid)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))] // the process handover reads /proc
 mod tests {
     use super::*;
 
