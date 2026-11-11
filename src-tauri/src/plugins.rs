@@ -149,6 +149,14 @@ pub fn is_trusted(cfg: &serde_json::Value, root: &Path) -> bool {
 /// BB1 (PR #42 round 11): the trust check for a key computed earlier (trust_key canonicalizes the
 /// vault root: a path lookup, done before the lifecycle lock by desk_shell)
 pub fn is_trusted_key(cfg: &serde_json::Value, key: &str) -> bool {
+    // iOS: community plugins are downloaded code, which App Review 2.5.2
+    // forbids. The mobile command list already has no plugins_set, so the UI
+    // cannot turn trust on — this closes the other doors (a config copied from
+    // a desktop, a hand-edited file, a future call site). One place, every
+    // caller: the plugin scheme handler, the runtime and the settings model.
+    if !crate::platform::PLUGINS {
+        return false;
+    }
     cfg["plugins_trusted"][key].as_bool() == Some(true)
 }
 

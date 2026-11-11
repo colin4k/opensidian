@@ -11677,18 +11677,35 @@ $("p-open").onclick = () => enterMode("open");
    user closing the picker, not an error to show. */
 $("p-pick").onclick = iosPickVault;
 async function iosPickVault() {
-  if (vaultPath) return;                    // P2: switching is an in-process swap
+  /* With a vault already open this is a switch: flush first (into the vault we
+     are leaving), pick, bind, reload. A cancelled pick costs nothing but the
+     flush. */
+  const switching = !!vaultPath;
   $("p-native-err").textContent = "";
   $("p-pick").disabled = true;
+  if (switching) {
+    document.body.inert = true;
+    const lost = await leaveVault();
+    if (lost.length) {
+      document.body.inert = false;
+      $("p-pick").disabled = false;
+      $("p-native-err").textContent = "Not switching: " + lost.join(", ") + " could not be saved.";
+      return;
+    }
+  }
+  let picked;
   try {
-    vaultPath = await inv("ios_pick_vault");
+    picked = await inv("ios_pick_vault");
   } catch (err) {
+    if (switching) document.body.inert = false;
     const msg = String(err);
     if (msg !== "cancelled") $("p-native-err").textContent = msg;
     $("p-pick").disabled = false;
     return;
   }
   $("p-pick").disabled = false;
+  if (switching) { window.location.reload(); return; }   // the backend already rebound
+  vaultPath = picked;
   $("picker").hidden = true;
   await enterVault();
 }
@@ -11703,6 +11720,27 @@ $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
    replace=true is "switch": flush every buffer + the layout into THIS vault,
    then the backend spawns the new process and exits this one. On a refused
    spawn nothing was lost (the flush is harmless) and the window stays. */
+/* iOS: replacing the OPEN vault, in place. The backend rebinds (drops the old
+   security scope, opens the new one, rebuilds the index), then the frontend
+   RELOADS itself. A reload is the only teardown that cannot leave a WebGL
+   context, a timer, an observer or a stale tab array pointing at the vault we
+   just left; the process, the window and the bound root stay as they are.
+   Buffers and the layout are flushed first, exactly like the desktop handoff. */
+async function switchVaultMobile(p) {
+  document.body.inert = true;
+  const lvSp = otel.begin("vault_leave", {});
+  const lost = await leaveVault();
+  otel.end(lvSp, { lost: lost.length }); otel.flush();
+  if (lost.length) {
+    document.body.inert = false;
+    $("p-err").textContent = "Not switching: " + lost.join(", ") + " could not be saved (see the banner). This window stays in the current vault.";
+    return;
+  }
+  try { vaultPath = await inv("ios_restore_vault", { path: p }); }
+  catch (err) { document.body.inert = false; $("p-err").textContent = String(err); return; }
+  window.location.reload();
+}
+
 async function openVault(p, replace) {
   $("p-err").textContent = "";
   if (!vaultPath) {
@@ -11718,10 +11756,10 @@ async function openVault(p, replace) {
     await enterVault();
     return;
   }
-  /* iOS: replacing an open vault is the next build's in-process swap (P2). Do
-     not pretend: a recent row while a vault is open says so and changes nothing. */
+  /* iOS: no second process to hand the vault to, so this is the in-process
+     swap (backend rebind + frontend reload). */
   if (PLATFORM.native_folder_picker) {
-    $("p-err").textContent = "Switching vaults inside the app arrives with the next build.";
+    await switchVaultMobile(p);
     return;
   }
   // vbswitch: inert BEFORE the flush. It used to be set after leaveVault
@@ -11770,6 +11808,10 @@ $("p-gonew").onclick = () => pickerGo(false);
    then tell the old window it may exit (switch_ready). A no-op in the backend
    for every other window. */
 async function switchReveal() {
+  // item 14 is a DESKTOP handoff: a window started by a switch is created
+  // hidden at the old rect and shows itself when this lands. iOS reloads the
+  // frontend in place instead, so there is nothing to reveal.
+  if (PLATFORM.native_folder_picker) return;
   try {
     await inv("switch_show");
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -11990,7 +12032,7 @@ async function quitFlush(why) {
   console.log(`[quit] ${why}: flushed, dirty=${lost.length}`);
   inv("quit_ready", { dirty: lost.length }).catch(() => {});
 }
-TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => inv("quit_arm")).catch(() => {});
+TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => { if (!PLATFORM.mobile) inv("quit_arm"); }).catch(() => {});
 /* plug-val G1: window.close() closes the app window as in stock (obsidian-git "commit-and-sync and
    close" calls it). The webview's own close only blanks the page and leaves the window up, and the
    page has no window-close permission (capabilities: core:default), so this takes the close
@@ -12027,6 +12069,10 @@ function sgearTok() {
   // platform first: the picker and the window chrome below branch on it.
   PLATFORM = await inv("platform_info").catch(() => PLATFORM);
   document.documentElement.dataset.platform = PLATFORM.os;
+  // Window chrome (self-drawn title bar, 8 resize strips, pointer handover) is a
+  // desktop concept and its commands are not registered on iOS; arming it there
+  // would only produce rejected invokes and a drag region over the tab bar.
+  if (!PLATFORM.mobile) wfArm();
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
@@ -12739,6 +12785,10 @@ function buildSettingsRows(pg, rows, pane) {
   pg.className = "rows";
   let section = null, card = null;   // null !== "" so the first row always opens a card
   for (const r of rows) {
+    // iOS: updates belong to the App Store. Neither the button nor its "Checking
+    // GitHub…" line can be honest there, and the command is not registered, so
+    // the row is not built at all rather than shown dead.
+    if (!PLATFORM.updater && r.action === "check_updates") continue;
     const sec = r.section || "";
     if (sec !== section) {                    // a new section = its own heading + card, like Obsidian
       section = sec;
@@ -13228,7 +13278,9 @@ function wfTok() {
   const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
   return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [wfd:" + wfEv.dn + "," + wfEv.up + "," + wfEv.cx + "," + wfEv.lc + "," + wfEv.mvb + "] [hdr:" + wfHdrTok() + "] [hdra:" + hdrActTok() + "]";
 }
-wfArm();
+/* wfArm() is armed from the boot sequence, AFTER platform_info: on iOS there is
+   no window chrome and none of its commands exist. It used to run here, at top
+   level, when the app only ever booted on a desktop. */
 
 /* ================= R26: FIND INSIDE A NOTE (Ctrl+F) =================
    Obsidian's in-note find bar, cloned. What the requirement rows buy, and where

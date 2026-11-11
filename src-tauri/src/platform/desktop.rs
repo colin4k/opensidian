@@ -88,3 +88,18 @@ mod tests {
         assert!(config_path().ends_with(".opensidian.json"));
     }
 }
+
+/// The only way an external URL leaves the app (check_external has already
+/// applied the scheme allowlist). std::process::Command only — no shell, no
+/// opener plugin. A missing xdg-open (headless smoke, minimal hosts) is a plain
+/// Err, never a fallback.
+pub fn open_external(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}

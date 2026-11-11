@@ -124,3 +124,15 @@ pub fn download(path: &Path) -> Result<(), String> {
         Err("iCloud did not start a download".into())
     }
 }
+
+/// The only way an external URL leaves the app. check_external has already
+/// applied the scheme allowlist; the bridge applies it again because it is the
+/// code that touches UIApplication.
+pub fn open_external(url: &str) -> Result<(), String> {
+    let v = answer(opensidian_mobilevault::open_url(url))?;
+    if v["opened"].as_bool() == Some(true) {
+        Ok(())
+    } else {
+        Err("the system did not open that link".into())
+    }
+}

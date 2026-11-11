@@ -10,8 +10,8 @@
 //! Call `pick_folder()` from a BLOCKING thread (Rust's main thread must stay
 //! free: the picker it presents is UIKit work that only the main runloop can
 //! do, and this call waits for the user). `restore`, `stop_access`,
-//! `is_ubiquitous` and `download` are synchronous and safe anywhere off the
-//! main thread.
+//! `is_ubiquitous`, `download` and `open_url` are synchronous and safe anywhere
+//! off the main thread.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -22,6 +22,7 @@ extern "C" {
     fn opensidian_mv_stop_access() -> *mut c_char;
     fn opensidian_mv_is_ubiquitous(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_download(path: *const c_char) -> *mut c_char;
+    fn opensidian_mv_open_url(url: *const c_char) -> *mut c_char;
     fn opensidian_mv_free(text: *mut c_char);
 }
 
@@ -65,6 +66,8 @@ pub fn stop_access() -> String {
 }
 
 /// Is this path an iCloud item, and is its content local? JSON: {ubiquitous, download}.
+/// Not called by the app yet (P4's offline UX); kept because the Swift side is
+/// the same file that owns the download call below.
 pub fn is_ubiquitous(path: &str) -> String {
     with_c(path, |p| unsafe { opensidian_mv_is_ubiquitous(p) })
 }
@@ -72,4 +75,11 @@ pub fn is_ubiquitous(path: &str) -> String {
 /// Ask iCloud to materialise the item behind `path`.
 pub fn download(path: &str) -> String {
     with_c(path, |p| unsafe { opensidian_mv_download(p) })
+}
+
+/// Open an http/https/mailto URL in the system browser or mail app. The
+/// allowlist is enforced on both sides (app::check_external and the Swift
+/// function): this call cannot reach any other scheme.
+pub fn open_url(url: &str) -> String {
+    with_c(url, |p| unsafe { opensidian_mv_open_url(p) })
 }

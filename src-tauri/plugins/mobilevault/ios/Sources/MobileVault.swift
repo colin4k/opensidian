@@ -267,6 +267,22 @@ public func opensidianMvDownload(_ path: UnsafePointer<CChar>?) -> UnsafeMutable
     return mvDup(VaultBridge.shared.download(String(cString: path)))
 }
 
+@_silgen_name("opensidian_mv_open_url")
+public func opensidianMvOpenUrl(_ url: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+    guard let url else { return mvDup(mvError("missing url")) }
+    let text = String(cString: url)
+    // Same allowlist as Rust's check_external: only http/https/mailto leave the
+    // app. Kept here too, because this is the function that touches UIApplication.
+    guard let target = URL(string: text), let scheme = target.scheme?.lowercased(),
+          ["http", "https", "mailto"].contains(scheme) else {
+        return mvDup(mvError("refused url: only http, https and mailto leave the app"))
+    }
+    DispatchQueue.main.async {
+        UIApplication.shared.open(target, options: [:], completionHandler: nil)
+    }
+    return mvDup(mvJSON(["opened": true]))
+}
+
 @_silgen_name("opensidian_mv_free")
 public func opensidianMvFree(_ pointer: UnsafeMutablePointer<CChar>?) {
     free(pointer)

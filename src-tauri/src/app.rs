@@ -2594,16 +2594,9 @@ fn check_external(url: &str) -> Result<(), String> {
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     check_external(&url)?;
-    // std::process::Command only — no shell, no opener plugin. Missing xdg-open
-    // (headless smoke, minimal hosts) is a plain Err, never a fallback.
-    std::process::Command::new("xdg-open")
-        .arg(&url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("xdg-open: {e}"))
+    // The mechanism is the platform's: xdg-open on desktop, UIApplication on
+    // iOS. The allowlist above is not.
+    platform::open_external(&url).map_err(|e| format!("open_external: {e}"))
 }
 
 #[tauri::command]
@@ -6638,7 +6631,7 @@ pub fn run() {
     });
     #[cfg(mobile)]
     let page_conf: Option<tauri::utils::config::WindowConfig> = None;
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(appid::plugin())
         .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
@@ -6802,8 +6795,18 @@ pub fn run() {
             }
             .expect("plugin response")
             .map(std::borrow::Cow::Owned)
-        })
-        .invoke_handler(tauri::generate_handler![
+        });
+
+    /* TWO COMMAND SETS, because on iOS "the button is gone" is not the same as
+       "the capability is gone". iOS gets only what it can actually do: no
+       process spawning, no plugin runtime or store, no updater, no window
+       chrome, no directory browser (the system picker is the only way in), no
+       second-vault handoff and no bind-by-bare-path. A command that merely
+       fails would still be a callable capability, which is what App Review
+       2.5.2 is about; test command_lists_differ_only_by_the_desktop_set pins
+       the difference to exactly this list. */
+    #[cfg(desktop)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
@@ -6825,9 +6828,28 @@ pub fn run() {
             // cp-secrets
             secrets::secrets_op,
             settings::settings_model
-        ])
-        .run(ctx)
-        .expect("tauri run");
+    ]);
+    #[cfg(mobile)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get,
+            create_vault, create_vault_dir, boot_notice, list_folders, create_dir, backlinks, search,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
+            read_workspace, write_workspace,
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
+            snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
+            plugins_state,
+            themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
+            get_quickfont, set_quickfont, get_fonts, set_font, font_families,
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
+            tab_removed, insert_datetime,
+            zoom, zoom_get, pdf_info,
+            // cp-secrets
+            secrets::secrets_op,
+            settings::settings_model
+    ]);
+
+    builder.run(ctx).expect("tauri run");
 }
 
 #[cfg(test)]
@@ -12054,5 +12076,67 @@ mod bookmark_tests {
         assert_eq!(v["ios_vaults"][0]["bookmark"], "XYZ");
         assert_eq!(v["ios_vaults"][0]["name"], "X");
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/* ---- P2: the two command lists ----
+   The mobile list is the desktop one MINUS exactly DESKTOP_ONLY. Drift here is
+   silent in both directions: a command forgotten on mobile is simply missing on
+   the phone, and one that sneaks INTO mobile is a capability iOS is not allowed
+   to have. Parsed from this very file, so neither list can drift unnoticed. */
+#[cfg(test)]
+mod handler_list_tests {
+    const DESKTOP_ONLY: &[&str] = &[
+        "pick_vault", "open_vault_window", "switch_show", "switch_ready", "home_dir", "list_dirs",
+        "plugins_set", "plugin_io", "plugin_vfs",
+        "desk_proc_spawn", "desk_proc_read", "desk_proc_write", "desk_proc_end", "desk_proc_kill",
+        "desk_net_listen", "desk_net_accept", "desk_net_close",
+        "desk_sock_read", "desk_sock_write", "desk_sock_end", "desk_sock_destroy",
+        "desk_http_request", "desk_shell",
+        "plugin_store::store_list", "plugin_store::store_detail",
+        "plugin_store::store_install", "plugin_store::store_uninstall",
+        "updates::update_check",
+        "win_rect", "win_gesture", "win_move_proto", "win_drag_start",
+        "win_minimize", "win_toggle_max", "win_close", "quit_arm", "quit_ready",
+    ];
+
+    /// every `generate_handler![...]` in app.rs, as sets of command names
+    fn handler_lists(src: &str) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        const OPEN: &str = ".invoke_handler(tauri::generate_handler![";
+        while let Some(i) = rest.find(OPEN) {
+            let after = &rest[i + OPEN.len()..];
+            let end = after.find(']').expect("unterminated generate_handler list");
+            let body = after[..end]
+                .lines()
+                .map(|l| l.split("//").next().unwrap())
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(body.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect());
+            rest = &after[end..];
+        }
+        out
+    }
+
+    #[test]
+    fn command_lists_differ_only_by_the_desktop_set() {
+        let lists = handler_lists(include_str!("app.rs"));
+        // the parser also finds its own OPEN literal further down this file; the two
+        // real handlers are the first two.
+        assert!(lists.len() >= 2, "expected the desktop and mobile handlers");
+        let (desktop, mobile) = (&lists[0], &lists[1]);
+        assert!(!desktop.is_empty() && !mobile.is_empty());
+        for n in DESKTOP_ONLY {
+            assert!(desktop.iter().any(|d| d == n), "{n} is listed as desktop-only but absent from the desktop set");
+            assert!(!mobile.iter().any(|m| m == n), "{n} must not be callable on iOS");
+        }
+        let extra: Vec<&String> = mobile.iter().filter(|m| !desktop.iter().any(|d| d == *m)).collect();
+        assert!(extra.is_empty(), "mobile registers commands the desktop set does not: {extra:?}");
+        let dropped: Vec<&String> = desktop
+            .iter()
+            .filter(|d| !mobile.iter().any(|m| m == *d) && !DESKTOP_ONLY.contains(&d.as_str()))
+            .collect();
+        assert!(dropped.is_empty(), "desktop commands silently missing from mobile (add to DESKTOP_ONLY or to both): {dropped:?}");
     }
 }
