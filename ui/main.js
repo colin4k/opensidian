@@ -11781,22 +11781,31 @@ $("p-open").onclick = () => enterMode("open");
    touches the bookmark — only the path it resolved to. "cancelled" is the
    user closing the picker, not an error to show.
    The picker's UI is a SEPARATE system process: on a cold first run it can stay
-   blank for a minute before it draws anything, which is why the button stays
-   disabled (and the wait is up to five minutes) instead of reporting a hang. */
+   blank for a minute before it draws anything, and on iOS 27 it can also refuse
+   to hand a folder over at all (Open draws, navigates, cancels — and never calls
+   back), which is why the app's own folder is offered next to it. */
 $("p-pick").onclick = iosPickVault;
-async function iosPickVault() {
+$("p-local").onclick = iosLocalVault;
+/* iOS: the app's OWN folder, "On My iPhone ▸ Opensidian ▸ Vault". No permission,
+   no bookmark, no picker: the path is inside the sandbox. It is the way in when
+   the system picker refuses to hand a folder over at all. */
+async function iosLocalVault() { return iosBindVault("ios_local_vault"); }
+async function iosPickVault() { return iosBindVault("ios_pick_vault"); }
+async function iosBindVault(cmd) {
   /* With a vault already open this is a switch: flush first (into the vault we
      are leaving), pick, bind, reload. A cancelled pick costs nothing but the
      flush. */
   const switching = !!vaultPath;
   $("p-native-err").textContent = "";
   $("p-pick").disabled = true;
+  $("p-local").disabled = true;
   if (switching) {
     document.body.inert = true;
     const lost = await leaveVault();
     if (lost.length) {
       document.body.inert = false;
       $("p-pick").disabled = false;
+      $("p-local").disabled = false;
       $("p-native-err").textContent = "Not switching: " + lost.join(", ") + " could not be saved.";
       return;
     }
@@ -11804,16 +11813,18 @@ async function iosPickVault() {
   let picked;
   $("p-pick").textContent = "Opening…";
   try {
-    picked = await inv("ios_pick_vault");
+    picked = await inv(cmd);
   } catch (err) {
     if (switching) document.body.inert = false;
     const msg = String(err);
     if (msg !== "cancelled") $("p-native-err").textContent = msg;
     $("p-pick").disabled = false;
+    $("p-local").disabled = false;
     $("p-pick").textContent = "Choose";
     return;
   }
   $("p-pick").disabled = false;
+  $("p-local").disabled = false;
   $("p-pick").textContent = "Choose";
   if (switching) { window.location.reload(); return; }   // the backend already rebound
   vaultPath = picked;

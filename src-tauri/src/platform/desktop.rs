@@ -63,6 +63,12 @@ pub fn adopt_folder(_path: &Path) -> Result<Picked, String> {
     Err("this platform does not adopt folders from the system".into())
 }
 
+/// There is no "app's own vault folder" on desktop: a vault is any directory the
+/// user can see, chosen through the app's own browser.
+pub fn local_vault_dir() -> Result<PathBuf, String> {
+    Err("this platform opens vaults through the app's own browser".into())
+}
+
 pub fn restore_bookmark(_base64: &str) -> Result<Restored, String> {
     Err("security-scoped bookmarks are an iOS feature".into())
 }

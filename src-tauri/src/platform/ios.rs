@@ -114,6 +114,19 @@ pub fn adopt_folder(path: &Path) -> Result<Picked, String> {
     })
 }
 
+/// The one vault the app can open WITHOUT any help from the system: a folder it
+/// owns. With UIFileSharingEnabled the Files app and Finder show `Documents` as
+/// "On My iPhone ▸ Opensidian", so a vault copied in there needs no permission,
+/// no bookmark and no security scope — the path is inside the sandbox.
+///
+/// This exists because the folder picker is not always able to hand a folder
+/// over: on iOS 27 a picker that draws, navigates and cancels can still never
+/// call `didPickDocumentsAt`, for local and iCloud folders alike. Notes under
+/// this root stay on the device; syncing still needs a folder the picker gave us.
+pub fn local_vault_dir() -> Result<PathBuf, String> {
+    Ok(home().join("Documents/Vault"))
+}
+
 pub fn restore_bookmark(base64: &str) -> Result<Restored, String> {
     let v = answer(opensidian_mobilevault::restore(base64))?;
     Ok(Restored {

@@ -1773,10 +1773,32 @@ fn bookmark_drop(path: &str) {
     cfg_set("ios_vaults", serde_json::Value::Array(list));
 }
 
+/// Is this path the app's own folder? Its TAIL identifies it, not the absolute
+/// path: a container loses its UUID on a restored backup (and on a simulator
+/// reinstall), and a vault that only matches "Documents/Vault" is still ours.
+/// False wherever the platform has no own folder.
+fn is_local_vault(p: &Path) -> bool {
+    platform::local_vault_dir().is_ok() && p.ends_with("Documents/Vault")
+}
+
 /// Boot: turn the stored path into a reachable one, or explain why not. Runs
 /// before bind_vault, because a bare path is EPERM until the scope is open.
 #[cfg(target_os = "ios")]
 fn ios_boot_restore(stored: PathBuf) -> Option<PathBuf> {
+    // The app's own folder is inside the sandbox: no bookmark was ever stored for
+    // it and none is needed. The CURRENT path wins over the recorded one, because
+    // the container is not guaranteed to keep its UUID.
+    if is_local_vault(&stored) {
+        if stored.is_dir() {
+            return Some(stored);
+        }
+        if let Ok(local) = platform::local_vault_dir() {
+            if local.is_dir() {
+                platform::diag(&format!("boot: reusing the app's own folder {}", local.display()));
+                return Some(local);
+            }
+        }
+    }
     let key = stored.display().to_string();
     let notice = |m: String| {
         eprintln!("opensidian: {m}");
@@ -2082,8 +2104,31 @@ fn adopt_opened(app: &tauri::AppHandle, urls: Vec<tauri::Url>) {
 #[cfg(not(target_os = "ios"))]
 fn adopt_opened(_app: &tauri::AppHandle, _urls: Vec<tauri::Url>) {}
 
+/// Open the vault the app itself owns (platform::local_vault_dir): a folder inside
+/// the sandbox, so it needs no permission, no bookmark and no picker. The Files
+/// app and Finder show it as "On My iPhone ▸ Opensidian ▸ Vault".
+#[tauri::command]
+fn ios_local_vault(app: tauri::AppHandle, v: State<'_, Vault>) -> Result<String, String> {
+    bind_local_vault(&app, &v)
+}
+
+fn bind_local_vault(app: &tauri::AppHandle, v: &Vault) -> Result<String, String> {
+    let dir = platform::local_vault_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    vault_rules(&dir)?;
+    bind_vault(v, &dir)?;
+    maybe_spawn_fill(app, v);
+    persist_vault(&dir);
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 async fn ios_restore_vault(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    // From the recents list: the app's own folder has no bookmark (a picked one
+    // always does, so this cannot hijack a real iCloud vault).
+    if bookmark_get(&path).is_none() && is_local_vault(Path::new(&path)) {
+        return bind_local_vault(&app, &app.state::<Vault>());
+    }
     let saved = bookmark_get(&path).ok_or_else(|| format!("{path}: no saved bookmark — choose the folder again"))?;
     let r = tauri::async_runtime::spawn_blocking(move || platform::restore_bookmark(&saved))
         .await
@@ -6973,7 +7018,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, vault_issues, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, vault_issues, ios_pick_vault, ios_local_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -6997,7 +7042,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get,
             create_vault, create_vault_dir, boot_notice, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, vault_issues, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, vault_issues, ios_pick_vault, ios_local_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -12327,5 +12372,25 @@ mod vault_issue_tests {
         assert!(!is_conflict_name("Note 2"), "a user is allowed to name a note 2");
         assert!(!is_conflict_name("conflict notes"), "prose, not a marker");
         assert!(!is_conflict_name("Copy of Note"));
+    }
+}
+
+#[cfg(test)]
+mod local_vault_tests {
+    use super::*;
+
+    /* The app's own folder is a folder it OWNS, so only a build that has one can
+       recognise it: on desktop every vault goes through the app's browser, and a
+       path that merely ends in "Documents/Vault" is somebody else's directory. */
+    #[test]
+    fn only_platforms_with_an_own_folder_recognise_it() {
+        let p = Path::new("/home/me/Documents/Vault");
+        if platform::local_vault_dir().is_ok() {
+            assert!(is_local_vault(p), "iOS recognises the app's own folder by its tail");
+            assert!(!is_local_vault(Path::new("/home/me/Documents/Vault2")), "a sibling is not ours");
+            assert!(!is_local_vault(Path::new("/home/me/Vault")), "the name alone is not enough");
+        } else {
+            assert!(!is_local_vault(p), "desktop has no folder of its own");
+        }
     }
 }

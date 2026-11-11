@@ -103,6 +103,13 @@
         <div class="ptext"><b>Choose vault folder</b><span>Files or iCloud Drive. Opensidian asks once per folder and keeps access with a bookmark; iCloud syncs the notes between your devices. The first time, iOS can take a minute to show Files — wait for it. Then tap Browse for iCloud Drive; after that it opens where you left off.</span></div>
         <button id="p-pick">Choose</button>
       </div>
+      <!-- Second door, for when the system picker refuses to hand a folder over
+           (iOS 27: it draws, navigates and cancels, but Open never calls back).
+           This one needs no permission at all: the folder is inside the app. -->
+      <div class="prow">
+        <div class="ptext"><b>Or open this app's folder</b><span>On My iPhone ▸ Opensidian ▸ Vault — put your notes there with the Files app or Finder. Nothing to allow: the folder belongs to Opensidian. Notes stay on this device.</span></div>
+        <button id="p-local">Open</button>
+      </div>
       <div id="p-native-err"></div>
     </div>
     <div id="p-sub" hidden>
