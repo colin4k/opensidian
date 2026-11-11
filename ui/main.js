@@ -74,7 +74,22 @@ let PLATFORM = { os: "unknown", mobile: false, can_switch_vault: false,
 function watchViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
-  const apply = () => document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+  let queued = 0;
+  const apply = () => {
+    if (queued) return;                       // the keyboard animates: one measure per frame
+    queued = requestAnimationFrame(() => {
+      queued = 0;
+      document.documentElement.style.setProperty("--vvh", Math.round(vv.height) + "px");
+      // The keyboard opening resizes the box under CM6's scroller. Ask the
+      // focused editor to measure again, so the caret it draws follows the new
+      // height instead of pointing at where the line USED to be.
+      try {
+        const g = typeof state !== "undefined" && state ? fg() : null;
+        const cm = g && Ed.cm ? Ed.cm(g) : null;
+        if (cm && cm.hasFocus && cm.requestMeasure) cm.requestMeasure();
+      } catch (_) { /* no editor mounted yet */ }
+    });
+  };
   vv.addEventListener("resize", apply);
   vv.addEventListener("scroll", apply);
   apply();
@@ -82,12 +97,17 @@ function watchViewport() {
 
 /* iOS has no contextmenu event. A long press synthesizes one on the pressed
    element, which is exactly what the tree/tab/bookmark rows already listen for
-   (they set .oncontextmenu), so one gesture reaches every existing menu. */
+   (they set .oncontextmenu), so one gesture reaches every existing menu.
+   NOT inside a text surface: there iOS owns the gesture (word selection, the
+   native Cut/Copy/Paste menu, link previews) and synthesizing a second menu
+   would fight it. CM6 sets `contenteditable=true` on .cm-content. */
 function longPressMenus() {
   let timer = null, el = null, x = 0, y = 0, fired = false;
   const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const inText = t => !!(t && t.closest && t.closest(".cm-editor, .preview, input, textarea, [contenteditable]"));
   addEventListener("touchstart", ev => {
     if (ev.touches.length !== 1) { cancel(); return; }
+    if (inText(ev.target)) return;              // native selection wins, untouched
     el = ev.target; x = ev.touches[0].clientX; y = ev.touches[0].clientY; fired = false;
     timer = setTimeout(() => {
       timer = null; fired = true;
@@ -12156,6 +12176,15 @@ function sgearTok() {
     // only hidden, so the bubble phase completes normally).
     $("side").addEventListener("click", ev => {
       if (ev.target.closest && ev.target.closest(".trow")) closeOverlays();
+    }, true);
+    /* iOS keeps the keyboard up when a tap lands on a non-focusable element, so
+       tapping the chrome (ribbon, drawer, tab strip, right sheet) would leave it
+       over half the note. Blur only when the focus is in a text surface, and only
+       for chrome — taps inside the note belong to the editor. */
+    addEventListener("pointerdown", ev => {
+      const a = document.activeElement;
+      const inEditor = a && a.closest && (a.closest(".cm-content") || a.closest(".titleedit") || a.matches("input, textarea"));
+      if (inEditor && ev.target.closest && ev.target.closest("#ribbon, #side, #rside, .tabbar, #vbar, #tabs")) a.blur();
     }, true);
   }
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook

@@ -2235,3 +2235,15 @@ html[data-platform="ios"] #sbox.detail #snav { display: none }
 html[data-platform="ios"] .srow { min-height: 60px; padding: 12px; gap: 12px }
 html[data-platform="ios"] .sctl.dropdown { width: 120px; max-width: 42vw }
 html[data-platform="ios"] .frange { width: 120px; max-width: 42vw }
+
+/* ---- iOS editor: platform selection, not ours ------------------------------
+   CM6 runs without drawSelection here, so selection handles, the magnifier and
+   the Cut/Copy/Paste menu are the platform's. The app must not take the gesture
+   away (main.js longPressMenus skips text surfaces, and the chrome-tap blur is
+   scoped to the chrome), and these three lines keep the surface selectable and
+   the scroller from rubber-banding the whole page. */
+html[data-platform="ios"] .cm-editor { -webkit-touch-callout: default }
+html[data-platform="ios"] .cm-content,
+html[data-platform="ios"] .titleedit,
+html[data-platform="ios"] .preview { -webkit-user-select: text; user-select: text }
+html[data-platform="ios"] .cm-scroller { overscroll-behavior: contain }
