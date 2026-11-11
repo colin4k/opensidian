@@ -23,6 +23,7 @@ extern "C" {
     fn opensidian_mv_is_ubiquitous(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_download(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_open_url(url: *const c_char) -> *mut c_char;
+    fn opensidian_mv_diag(message: *const c_char);
     fn opensidian_mv_free(text: *mut c_char);
 }
 
@@ -44,6 +45,18 @@ fn with_c(value: &str, f: impl FnOnce(*const c_char) -> *mut c_char) -> String {
         // A NUL in a path/bookmark cannot exist in a Rust &str path, but a
         // hand-built bookmark string could carry one: answer, do not abort.
         Err(_) => r#"{"error":"the value contains a NUL byte"}"#.to_string(),
+    }
+}
+
+/// Append one line to the SAME diagnostics file the Swift side writes
+/// (Documents/opensidian-diagnostics.log). Rust has no console on a device whose
+/// Console.app cannot see it, so the only way to place a Rust step — "the
+/// bookmark was made, the index is building" — on the same timeline as the
+/// picker is to hand it to Swift. Best effort: a NUL or a missing file is
+/// dropped, never a panic.
+pub fn diag(message: &str) {
+    if let Ok(c) = CString::new(message) {
+        unsafe { opensidian_mv_diag(c.as_ptr()) };
     }
 }
 

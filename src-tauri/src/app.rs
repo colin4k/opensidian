@@ -208,8 +208,12 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     #[cfg(not(target_os = "ios"))]
     builtins::seed_and_record(p);
     ensure_app_json(p);
+    let t = std::time::Instant::now();
     let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
+    platform::diag(&format!("bind: snapshot walk took {:?}", t.elapsed()));
+    let t = std::time::Instant::now();
     let ix = span_timed!("index_build", build_index_for_platform(p), serde_json::json!({"notes": 0}));
+    platform::diag(&format!("bind: index build took {:?}", t.elapsed()));
     *v.index.lock().unwrap() = ix;
     *v.seed.lock().unwrap() = Some(base);
     Ok(())
@@ -2011,13 +2015,25 @@ fn vault_issues(v: State<Vault>) -> VaultIssues {
    recents list, where the path already has a saved bookmark. */
 #[tauri::command]
 async fn ios_pick_vault(app: tauri::AppHandle) -> Result<String, String> {
+    // Every step is on the picker's timeline: "tapping Open did nothing" comes
+    // in three shapes (the picker never answered, the bookmark was refused, the
+    // bind is still walking), and the log is where they are told apart.
+    let started = std::time::Instant::now();
     let picked = tauri::async_runtime::spawn_blocking(platform::pick_folder).await.map_err(|e| e.to_string())??;
+    platform::diag(&format!("pick: answer after {:?}", started.elapsed()));
     let p = PathBuf::from(&picked.path);
-    vault_rules(&p)?;
-    bind_vault(&app.state::<Vault>(), &p)?;
+    vault_rules(&p).map_err(|e| {
+        platform::diag(&format!("pick: refused {}: {e}", p.display()));
+        e
+    })?;
+    bind_vault(&app.state::<Vault>(), &p).map_err(|e| {
+        platform::diag(&format!("pick: bind failed: {e}"));
+        e
+    })?;
     maybe_spawn_fill(&app, &app.state::<Vault>());
     bookmark_put(&picked.path, &picked.bookmark, &picked.name);
     persist_vault(&p);
+    platform::diag(&format!("pick: bound {} in {:?}", p.display(), started.elapsed()));
     Ok(picked.path)
 }
 

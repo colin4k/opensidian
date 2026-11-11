@@ -95,6 +95,13 @@ pub fn pick_folder() -> Result<Picked, String> {
     })
 }
 
+/// One line into the picker's diagnostics log (Documents/opensidian-diagnostics.log).
+/// The Swift half owns the file: Rust has no console on a device that Console.app
+/// cannot see, and the steps AFTER the picker closes run here.
+pub fn diag(message: &str) {
+    opensidian_mobilevault::diag(message);
+}
+
 pub fn restore_bookmark(base64: &str) -> Result<Restored, String> {
     let v = answer(opensidian_mobilevault::restore(base64))?;
     Ok(Restored {

@@ -417,6 +417,15 @@ public func opensidianMvOpenUrl(_ url: UnsafePointer<CChar>?) -> UnsafeMutablePo
     return mvDup(mvJSON(["opened": true]))
 }
 
+/// Rust's half of the same log. The app's steps after the picker closes (bind,
+/// index, bookmark) run in Rust, and a device that reports "tapping Open does
+/// nothing" has to show where that sequence stopped.
+@_silgen_name("opensidian_mv_diag")
+public func opensidianMvDiag(_ message: UnsafePointer<CChar>?) {
+    guard let message else { return }
+    VaultBridge.diag(String(cString: message))
+}
+
 @_silgen_name("opensidian_mv_free")
 public func opensidianMvFree(_ pointer: UnsafeMutablePointer<CChar>?) {
     free(pointer)

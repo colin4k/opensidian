@@ -11802,6 +11802,7 @@ async function iosPickVault() {
     }
   }
   let picked;
+  $("p-pick").textContent = "Opening…";
   try {
     picked = await inv("ios_pick_vault");
   } catch (err) {
@@ -11809,13 +11810,21 @@ async function iosPickVault() {
     const msg = String(err);
     if (msg !== "cancelled") $("p-native-err").textContent = msg;
     $("p-pick").disabled = false;
+    $("p-pick").textContent = "Choose";
     return;
   }
   $("p-pick").disabled = false;
+  $("p-pick").textContent = "Choose";
   if (switching) { window.location.reload(); return; }   // the backend already rebound
   vaultPath = picked;
   $("picker").hidden = true;
-  await enterVault();
+  /* A bind that answers but leaves the UI on the boot screen used to look like
+     "tapping Open did nothing": say what failed instead of staying quiet. */
+  try { await enterVault(); }
+  catch (err) {
+    $("picker").hidden = false;
+    $("p-native-err").textContent = "Opened the folder but could not load it: " + err;
+  }
 }
 $("p-back").onclick = showPicker;
 $("p-recent").addEventListener("scroll", () => { if (vaultPath) { try { updateTitle(); } catch (_) {} } }, { passive: true });   // item 14: [prow:] follows the list scroll

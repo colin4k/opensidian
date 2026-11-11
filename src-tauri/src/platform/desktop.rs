@@ -54,6 +54,9 @@ pub fn pick_folder() -> Result<Picked, String> {
     Err("this platform has no native folder picker; the app's own browser is used".into())
 }
 
+/// The iOS picker log has no desktop counterpart: stderr is always there.
+pub fn diag(_message: &str) {}
+
 pub fn restore_bookmark(_base64: &str) -> Result<Restored, String> {
     Err("security-scoped bookmarks are an iOS feature".into())
 }
