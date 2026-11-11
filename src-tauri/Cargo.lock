@@ -2382,6 +2382,7 @@ dependencies = [
  "javascriptcore-rs",
  "landlock",
  "libc",
+ "opensidian-mobilevault",
  "pulldown-cmark",
  "regex",
  "serde",
@@ -2391,6 +2392,13 @@ dependencies = [
  "tauri",
  "tauri-build",
  "url",
+]
+
+[[package]]
+name = "opensidian-mobilevault"
+version = "0.9.2"
+dependencies = [
+ "swift-rs",
 ]
 
 [[package]]

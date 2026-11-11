@@ -13,7 +13,7 @@ use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use tauri::State;
+use tauri::{Manager, State};
 
 // The module names that were `mod x;` here are now declared at the lib root
 // (lib.rs) so their own `crate::` paths keep meaning the same thing; importing
@@ -21,9 +21,9 @@ use tauri::State;
 #[allow(unused_imports)] // some are referenced only from desktop-gated call sites
 use crate::{
     appid, builtins, canvasfs, cfgstore, census, consent, datefmt, desk_http, desk_net, desk_proc,
-    graphq, index, migrate, outline, pdf, plugin_store, plugins, pasteimg, perf, qscreate, sandbox,
-    secrets, settings, spawn, spawner, srcmode, themefs, updates, vaultfs, vaultlock, watcher,
-    winsize,
+    graphq, index, migrate, outline, pdf, platform, plugin_store, plugins, pasteimg, perf,
+    qscreate, sandbox, secrets, settings, spawn, spawner, srcmode, themefs, updates, vaultfs,
+    vaultlock, watcher, winsize,
 };
 #[cfg(feature = "devui")] // goal devui: DEV-ONLY UI hot reload, never in a default/release build
 use crate::devui;
@@ -40,16 +40,18 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
    search/graph/backlinks/render never touch the filesystem.
 
    vaultbleed (operator 2026-10-03, SEVERE): ONE VAULT PER PROCESS, FOR THE
-   PROCESS'S LIFETIME. `root` is a OnceLock: bound at most once (argv boot or
-   the picker), never re-rooted. Opening/switching to another vault spawns a
-   new process. With no second root ever reachable, the watcher, the css
-   watch and every command can only ever see this one vault — bleed is
-   impossible by construction, not by locking discipline. */
+   PROCESS'S LIFETIME. `root` is a platform::RootSlot: on desktop it is the same
+   set-once OnceLock as before (argv boot or the picker, never re-rooted;
+   opening another vault spawns a new process). On iOS there is no second
+   process to spawn, so the slot can be REPLACED — the old folder's security
+   scope is released in bind_vault before the new one is claimed, and the index,
+   watcher baseline and CSS watch are rebuilt from the new root. */
 pub(crate) struct Vault {
-    root: OnceLock<PathBuf>,
+    root: platform::RootSlot,
     index: Mutex<Index>,
     /// vaultbleed B: the flock that makes this the ONLY backend on the vault
-    /// (vaultlock.rs); held until the process exits
+    /// (vaultlock.rs); held until the process exits. Desktop only: iOS has one
+    /// process and no second backend to keep out.
     lock: OnceLock<vaultlock::VaultLock>,
     /// typing-srclong: the watcher baseline, walked by bind BEFORE Index::build
     /// and taken by the first watch_tick. Without it that first tick seeded its
@@ -60,7 +62,7 @@ pub(crate) struct Vault {
 }
 
 pub(crate) fn cur_vault(v: &Vault) -> Option<PathBuf> {
-    v.root.get().cloned()
+    v.root.get()
 }
 
 /* vaultbleed: a named point INSIDE a root+index critical path, where a test
@@ -115,17 +117,39 @@ impl std::fmt::Display for BindErr {
 /// process, vaultbleed B) -> claim the root. The lock is stored only after the
 /// root claim succeeded; a failed claim drops (releases) it.
 fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
-    if let Some(cur) = cur_vault(v) {
-        return Err(BindErr::Bound(cur, p.to_path_buf()));
+    // Desktop: set once, forever (one process, one vault). iOS: replacing the
+    // vault IS the feature, because there is no second process to spawn for it;
+    // the two RootSlots in platform/ are what make this one line mean both.
+    if !platform::CAN_SWITCH_VAULT {
+        if let Some(cur) = cur_vault(v) {
+            return Err(BindErr::Bound(cur, p.to_path_buf()));
+        }
     }
     let canon = p.canonicalize().map_err(|e| BindErr::Lock(vaultlock::LockErr::Io(format!("{}: {e}", p.display()))))?;
+    // No flock on iOS: its whole job is keeping a SECOND backend off the vault,
+    // and a phone cannot start one. Compiled out, not skipped at runtime.
+    #[cfg(not(target_os = "ios"))]
     let lk = vaultlock::acquire_in(lock_dir, &canon).map_err(BindErr::Lock)?;
-    v.root.set(p.to_path_buf()).map_err(|_| BindErr::Bound(cur_vault(v).unwrap(), p.to_path_buf()))?;
+    // Both are desktop-only inputs (the lock file key and its log line); naming
+    // them unused keeps the iOS build warning-free without a fake branch.
+    #[cfg(target_os = "ios")]
+    let _ = (&canon, lock_dir);
+    // iOS: drop the folder we are leaving BEFORE claiming the new one, so a
+    // switch never leaves two security scopes open.
+    if platform::CAN_SWITCH_VAULT && cur_vault(v).is_some() {
+        platform::release_vault_access();
+    }
+    v.root.set(p.to_path_buf()).map_err(|_| BindErr::Bound(cur_vault(v).unwrap_or_else(|| p.to_path_buf()), p.to_path_buf()))?;
+    #[cfg(not(target_os = "ios"))]
     eprintln!("[vaultlock] pid={} holds {} ({})", std::process::id(), canon.display(), lk.path.display());
+    #[cfg(not(target_os = "ios"))]
     let _ = v.lock.set(lk);
     // R3 (item 4): seed before the index walk, so the frontend's themes_scan —
     // which runs after this returns — sees the built-ins as ordinary theme
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
+    // On iOS the seed is OFF: opening an iCloud folder for the first time must
+    // not upload a theme directory. Settings offers the install explicitly.
+    #[cfg(not(target_os = "ios"))]
     builtins::seed_and_record(p);
     ensure_app_json(p);
     let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
@@ -1589,10 +1613,13 @@ fn vault_get(v: State<Vault>) -> Option<String> {
     cur_vault(&v).map(|p| p.display().to_string())
 }
 
-/* R1.6 vault persistence: ~/.opensidian.json {"last": path, "list": [paths]}.
-   Written only on explicit open/create — VAULT_DIR boots (probes) never touch it. */
+/* R1.6 vault persistence: {"last": path, "list": [paths]} in the config file.
+   WHERE that file is belongs to the platform: ~/.opensidian.json on desktop,
+   Library/Application Support on iOS (only Documents and Library survive a
+   restore-from-backup). Written only on explicit open/create — VAULT_DIR boots
+   (probes) never touch it. */
 fn cfg_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json")
+    platform::config_path()
 }
 
 /// whole config as a Value, read under the shared cfg lock (cfgstore.rs)
@@ -1604,7 +1631,7 @@ pub(crate) fn cfg_value() -> serde_json::Value {
             serde_json::json!({})
         });
     }
-    cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
+    cfgstore::read_value_in(&platform::config_lock_dir(), &cfg_path())
 }
 
 /* vaultbleed C: the ONLY way anything writes ~/.opensidian.json. N windows = N
@@ -1614,7 +1641,7 @@ pub(crate) fn cfg_value() -> serde_json::Value {
 fn cfg_update(ops: &[cfgstore::Op]) {
     let r = match spawner::client() {
         Some(c) => c.cfg(ops), // confined: the unconfined spawner applies the Ops
-        None => cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ()),
+        None => cfgstore::update_in(&platform::config_lock_dir(), &cfg_path(), ops).map(|_| ()),
     };
     if let Err(e) = r {
         eprintln!("config write failed: {e}");
@@ -1640,6 +1667,88 @@ use cfgstore::push_recent;
 
 fn persist_vault(p: &Path) {
     cfg_update(&[cfgstore::Op::PushRecent(p.display().to_string())]);
+}
+
+/* ---- iOS bookmarks: the security-scoped record behind a vault path ----
+   Stored in the SAME config file as last/list: it is read at boot before a
+   vault exists, and cfgstore already merges concurrent writes there. Keyed by
+   path — picking the same folder again REPLACES its record, never duplicates
+   it. These helpers are compiled on every platform (the commands that use them
+   are registered everywhere); on desktop nothing writes `ios_vaults`, so they
+   simply stay empty. */
+fn bookmark_records() -> Vec<serde_json::Value> {
+    cfg_value()["ios_vaults"].as_array().cloned().unwrap_or_default()
+}
+
+fn bookmark_get(path: &str) -> Option<String> {
+    bookmark_records()
+        .iter()
+        .find(|r| r["path"].as_str() == Some(path))
+        .and_then(|r| r["bookmark"].as_str())
+        .map(String::from)
+}
+
+/// One record per path: picking the same folder again replaces its bookmark and
+/// leaves every other vault alone. Pure, so the shape is testable without a
+/// config file or an iOS device.
+fn bookmark_upsert(list: Vec<serde_json::Value>, path: &str, bookmark: &str, name: &str) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = list.into_iter().filter(|r| r["path"].as_str() != Some(path)).collect();
+    out.push(serde_json::json!({"path": path, "bookmark": bookmark, "name": name}));
+    out
+}
+
+fn bookmark_put(path: &str, bookmark: &str, name: &str) {
+    // An empty bookmark is not a record: it would resolve to nothing on the
+    // next launch and turn a working vault into "pick it again".
+    if bookmark.is_empty() {
+        return;
+    }
+    let list = bookmark_upsert(bookmark_records(), path, bookmark, name);
+    cfg_set("ios_vaults", serde_json::Value::Array(list));
+}
+
+fn bookmark_drop(path: &str) {
+    let list: Vec<serde_json::Value> =
+        bookmark_records().into_iter().filter(|r| r["path"].as_str() != Some(path)).collect();
+    cfg_set("ios_vaults", serde_json::Value::Array(list));
+}
+
+/// Boot: turn the stored path into a reachable one, or explain why not. Runs
+/// before bind_vault, because a bare path is EPERM until the scope is open.
+#[cfg(target_os = "ios")]
+fn ios_boot_restore(stored: PathBuf) -> Option<PathBuf> {
+    let key = stored.display().to_string();
+    let notice = |m: String| {
+        eprintln!("opensidian: {m}");
+        if let Ok(mut g) = BOOT_NOTICE.lock() {
+            *g = Some(m);
+        }
+    };
+    let Some(saved) = bookmark_get(&key) else {
+        notice(format!("{key}: no saved iOS bookmark — choose the folder again"));
+        return None;
+    };
+    match platform::restore_bookmark(&saved) {
+        Ok(r) => {
+            // A stale bookmark was rewritten by the bridge; use the fresh one.
+            // Otherwise the saved one still resolves (and follows a moved
+            // folder), so the record moves with the path instead of dying.
+            let current = if r.stale && !r.bookmark.is_empty() { r.bookmark.clone() } else { saved };
+            if r.path != key {
+                bookmark_drop(&key);
+            }
+            bookmark_put(&r.path, &current, &r.name);
+            if r.path != key {
+                persist_vault(Path::new(&r.path));
+            }
+            eprintln!("opensidian: restored iOS folder {}", r.path);
+            Some(PathBuf::from(r.path))
+        }
+        Err(e) => {
+            notice(format!("{key}: {e} — choose the folder again"));
+            None
+        }
+    }
 }
 
 /* ux-4: left sidebar width persistence (clamped 150-600, default 200 total
@@ -1777,9 +1886,90 @@ fn write_workspace(
     )
 }
 
+/// The recents list, as PATHS the frontend can hand back to open.
+/// iOS: a stored path can exist yet be unreadable until its bookmark is
+/// resolved, so `is_dir()` would silently empty the list at every launch. The
+/// bookmark records are the truth there. Desktop: the old is_dir filter.
+#[cfg(target_os = "ios")]
+fn recent_vault_paths() -> Vec<String> {
+    bookmark_records().into_iter().filter_map(|r| r["path"].as_str().map(String::from)).collect()
+}
+
+#[cfg(not(target_os = "ios"))]
+fn recent_vault_paths() -> Vec<String> {
+    read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect()
+}
+
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
-    span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
+    span_timed!("recent_vaults", recent_vault_paths())
+}
+
+/// What the frontend may branch on (src/platform/mod.rs). One command instead of
+/// sniffing a user agent: the UI hides the window chrome, the plugin store and
+/// the updater from THIS answer, not from a build-time string.
+#[tauri::command]
+fn platform_info() -> platform::PlatformInfo {
+    platform::info()
+}
+
+/* ---- iOS vault entry points ----
+   Both pick and restore BLOCK on user/system work (the picker waits for a
+   person; resolving a bookmark hits the file provider), so they run on the
+   blocking pool — the same pattern secrets_op uses. The UI's boot picker calls
+   ios_pick_vault with no vault open; ios_restore_vault is reached from the
+   recents list, where the path already has a saved bookmark. */
+#[tauri::command]
+async fn ios_pick_vault(app: tauri::AppHandle) -> Result<String, String> {
+    let picked = tauri::async_runtime::spawn_blocking(platform::pick_folder).await.map_err(|e| e.to_string())??;
+    let p = PathBuf::from(&picked.path);
+    vault_rules(&p)?;
+    bind_vault(&app.state::<Vault>(), &p)?;
+    bookmark_put(&picked.path, &picked.bookmark, &picked.name);
+    persist_vault(&p);
+    Ok(picked.path)
+}
+
+#[tauri::command]
+async fn ios_restore_vault(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let saved = bookmark_get(&path).ok_or_else(|| format!("{path}: no saved bookmark — choose the folder again"))?;
+    let r = tauri::async_runtime::spawn_blocking(move || platform::restore_bookmark(&saved))
+        .await
+        .map_err(|e| e.to_string())??;
+    let p = PathBuf::from(&r.path);
+    vault_rules(&p)?;
+    bind_vault(&app.state::<Vault>(), &p)?;
+    let current = if r.stale && !r.bookmark.is_empty() { r.bookmark.clone() } else { bookmark_get(&path).unwrap_or_default() };
+    if r.path != path {
+        bookmark_drop(&path);
+    }
+    bookmark_put(&r.path, &current, &r.name);
+    persist_vault(&p);
+    Ok(r.path)
+}
+
+/// Forget a vault: drop its bookmark (its security scope goes with the process)
+/// and its place in the recents list. Never touches the folder itself.
+#[tauri::command]
+fn ios_forget_vault(path: String) {
+    bookmark_drop(&path);
+    let (last, list) = read_cfg();
+    let kept: Vec<String> = list.into_iter().filter(|p| *p != path).collect();
+    cfg_set("list", serde_json::json!(kept));
+    if last.as_deref() == Some(path.as_str()) {
+        cfg_set("last", serde_json::Value::Null);
+    }
+}
+
+/// Ask iCloud to materialise a file (a note the user opened while offline).
+/// A local file is not an error to the caller: it is already here.
+#[tauri::command]
+fn ios_download(path: String) -> Result<(), String> {
+    match platform::download(Path::new(&path)) {
+        Ok(()) => Ok(()),
+        Err(e) if platform::IS_MOBILE => Err(e),
+        Err(_) => Ok(()),
+    }
 }
 
 /// the BOOT picker's one bind (vaultbleed: Err once this process has a vault —
@@ -2185,10 +2375,10 @@ impl spawner::Handler for LiveSpawner {
         make_vault_dir(parent, name)
     }
     fn cfg(&self, ops: &[cfgstore::Op]) -> Result<(), String> {
-        cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ())
+        cfgstore::update_in(&platform::config_lock_dir(), &cfg_path(), ops).map(|_| ())
     }
     fn read_cfg(&self) -> serde_json::Value {
-        cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
+        cfgstore::read_value_in(&platform::config_lock_dir(), &cfg_path())
     }
     fn list_dirs(&self, path: &str) -> Vec<String> {
         list_dirs_here(path)
@@ -6331,6 +6521,11 @@ pub fn run() {
     //   RUSTIDIAN_LL_ALONE          -> OPENSIDIAN_LL_ALONE (test only)
     //   RUSTIDIAN_OTELSINK_CHILD    -> OPENSIDIAN_OTELSINK_CHILD (test only)
     //   localStorage rustidian.graphRenderer -> opensidian.graphRenderer (hidden dev knob)
+    // iOS keeps its config in Library/Application Support, whose directories may
+    // not exist on a fresh install; cfgstore writes a temp file next to it, so
+    // they must exist BEFORE the first preference write, not at a convenient
+    // moment. A no-op on desktop, where $HOME already exists.
+    platform::prepare_config_dirs();
     migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
     // VAULT_DIR (probes/tests) wins; else the argv vault (vaultarg, README §2) —
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
@@ -6343,9 +6538,16 @@ pub fn run() {
         eprintln!("opensidian: {e} — ignored, the window opens normally");
     }
     let arg_vault = argv_vault(&args, env_vault.is_some());
-    let init = env_vault
-        .or(arg_vault)
-        .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
+    let last = read_cfg().0.map(PathBuf::from);
+    /* iOS: the stored PATH is not reachable until its security-scoped bookmark
+       is resolved — the sandbox answers EPERM to a bare path after a cold start.
+       So the restore happens HERE, before anything opens the vault, and a
+       failure (moved folder, revoked scope) leaves the picker with the notice
+       instead of a broken window. Desktop keeps the old is_dir() check. */
+    #[cfg(target_os = "ios")]
+    let init = env_vault.or(arg_vault).or(last).and_then(ios_boot_restore);
+    #[cfg(not(target_os = "ios"))]
+    let init = env_vault.or(arg_vault).or_else(|| last.filter(|p| p.is_dir()));
     // R18.1: open the telemetry sink BEFORE the sandbox closes. Landlock filters
     // path lookups, not open descriptors, and OPENSIDIAN_OTEL routinely names a
     // file outside the write roots (the gate's $OUT). Opening it after enforce()
@@ -6382,7 +6584,7 @@ pub fn run() {
     // perf-index: one walk + read now, so the first note_open is already warm.
     // vaultbleed: the argv/last-vault boot binds through the SAME set-once
     // bind_vault the picker uses (seed + index build happen inside it).
-    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+    let vault = Vault { root: platform::RootSlot::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
@@ -6424,10 +6626,18 @@ pub fn run() {
     }
     // cp-unrestricted: the window is built in setup (page_window), not by Tauri
     // from the config, so its pages pass through page_csp (CSP by trust state).
+    // iOS: the runtime owns the one webview (a second one is not a thing on
+    // mobile), so the config window is created normally and page_window is
+    // skipped. What that costs there is the per-window request hook: the image
+    // and plugin schemes are registered at app level anyway, and plugins are
+    // off on iOS.
+    #[cfg(desktop)]
     let page_conf = ctx.config_mut().app.windows.first_mut().map(|wc| {
         wc.create = false;
         wc.clone()
     });
+    #[cfg(mobile)]
+    let page_conf: Option<tauri::utils::config::WindowConfig> = None;
     tauri::Builder::default()
         .plugin(appid::plugin())
         .manage(vault)
@@ -6596,7 +6806,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, platform_info, ios_pick_vault, ios_restore_vault, ios_forget_vault, ios_download, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -11535,7 +11745,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) });
+        let v = Arc::new(Vault { root: platform::RootSlot::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) });
         bind_vault(&v, p).unwrap();
         v
     }
@@ -11620,9 +11830,9 @@ mod vaultbleed_tests {
         // an index; a second spelling of the path keys the same lock.
         let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
         let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
-        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        let v1 = Vault { root: platform::RootSlot::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
         bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
-        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        let v2 = Vault { root: platform::RootSlot::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
         let alias = a.join("..").join(a.file_name().unwrap());
         match bind_vault_locked(&v2, &alias, &locks) {
             Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
@@ -11799,5 +12009,50 @@ mod devui_guard {
     #[test]
     fn devui_guard_default_build_has_no_devui() {
         assert!(!cfg!(feature = "devui"));
+    }
+}
+
+/* ---- P1: the iOS bookmark record ----
+   The only thing that makes a vault survive a cold start on iOS is this record:
+   path -> security-scoped bookmark. Its shape is pinned here because a wrong
+   one is not a visible bug, it is "choose the folder again" on every launch. */
+#[cfg(test)]
+mod bookmark_tests {
+    use super::*;
+
+    #[test]
+    fn bookmark_upsert_replaces_by_path_and_keeps_the_rest() {
+        let one = bookmark_upsert(vec![], "/a", "AAA", "A");
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0]["path"], "/a");
+        let two = bookmark_upsert(one, "/b", "BBB", "B");
+        assert_eq!(two.len(), 2);
+        let again = bookmark_upsert(two, "/a", "A2", "A");
+        assert_eq!(again.len(), 2, "same path must replace, never duplicate");
+        let a = again.iter().find(|r| r["path"] == "/a").expect("the replaced record is still there");
+        assert_eq!(a["bookmark"], "A2", "the fresh bookmark wins");
+        assert!(again.iter().any(|r| r["path"] == "/b"), "the other vault is untouched");
+    }
+
+    /// The record lives in the SAME config file cfgstore already merges; this
+    /// proves the array survives a write/read round trip (not just in memory).
+    #[test]
+    fn bookmark_records_round_trip_through_cfgstore() {
+        let d = std::env::temp_dir().join(format!("opensidian-bm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("locks")).unwrap();
+        let cfg = d.join("config.json");
+        let list = bookmark_upsert(vec![], "/x", "XYZ", "X");
+        cfgstore::update_in(
+            &d.join("locks"),
+            &cfg,
+            &[cfgstore::Op::Set("ios_vaults".into(), serde_json::Value::Array(list))],
+        )
+        .unwrap();
+        let v = cfgstore::read_value_in(&d.join("locks"), &cfg);
+        assert_eq!(v["ios_vaults"][0]["path"], "/x");
+        assert_eq!(v["ios_vaults"][0]["bookmark"], "XYZ");
+        assert_eq!(v["ios_vaults"][0]["name"], "X");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

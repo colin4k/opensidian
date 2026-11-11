@@ -60,6 +60,14 @@ function pspan(name, attrs, fn) {
 /* perfhunt: first_paint = page start -> first committed frame (boot ends at the first note rendered) */
 requestAnimationFrame(() => setTimeout(() => perf.mark("first_paint", 0), 0));
 const $ = id => document.getElementById(id);
+
+/* platform_info: the ONE runtime branch (src/platform/mod.rs). No user-agent
+   sniffing — Rust answers whether the OS owns folder selection, whether a vault
+   can be swapped in place, and whether plugins/the updater exist here at all.
+   Read once at boot; the picker and the window chrome branch on it. */
+let PLATFORM = { os: "unknown", mobile: false, can_switch_vault: false,
+                 native_folder_picker: false, plugins: true, updater: true };
+
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
    census silently STALE (the title only moves in updateTitle) — smoke then
    reports the symptom, never the cause. Surface it as [jserr:...]. */
@@ -11583,6 +11591,16 @@ function showPicker() {
   const lg = $("plogo");
   if (lg && !lg.getAttribute("src")) lg.src = lg.dataset.src;
   $("p-actions").style.display = "";
+  // iOS: the OS owns folder selection (UIDocumentPicker + security-scoped
+  // bookmark). Keep recents, replace the two folder-browser rows with one
+  // system action; the browser below needs list_dirs, which iOS does not have.
+  const native = PLATFORM.native_folder_picker;
+  const rowCreate = $("p-create") && $("p-create").closest(".prow");
+  const rowOpen = $("p-open") && $("p-open").closest(".prow");
+  if (rowCreate) rowCreate.style.display = native ? "none" : "";
+  if (rowOpen) rowOpen.style.display = native ? "none" : "";
+  if ($("p-native")) $("p-native").hidden = !native;
+  if ($("p-native-err")) $("p-native-err").textContent = "";
   $("p-sub").hidden = true;
   $("p-err").textContent = "";
   $("p-close").hidden = !vaultPath;
@@ -11609,7 +11627,7 @@ async function loadRecent() {
     li.querySelector("b").textContent = base(p);
     li.querySelector("span").textContent = p;
     li.onclick = () => openVault(p, true);  // boot picker: bind; open window: SWITCH (new process)
-    if (vaultPath) {                         // vaultbleed: "open in new window" keeps this one
+    if (vaultPath && !PLATFORM.native_folder_picker) {   // vaultbleed: "open in new window" keeps this one
       const nw = document.createElement("button");
       nw.className = "p-newwin"; nw.title = "Open in new window"; nw.textContent = "⧉";
       nw.onclick = e => { e.stopPropagation(); openVault(p, false); };
@@ -11644,7 +11662,7 @@ async function enterMode(m) {
   $("p-sub").hidden = false;
   $("p-name").hidden = m !== "create";
   $("p-go").textContent = m === "create" ? "Create vault" : "Open this folder";
-  $("p-gonew").hidden = !vaultPath;          // vaultbleed: open/create in a NEW window, keep this one
+  $("p-gonew").hidden = !vaultPath || PLATFORM.native_folder_picker; // vaultbleed: open/create in a NEW window, keep this one
   $("p-gonew").textContent = m === "create" ? "Create in new window" : "Open in new window";
   $("p-err").textContent = "";
   await browseTo(await inv("home_dir"));
@@ -11653,6 +11671,27 @@ async function enterMode(m) {
 }
 $("p-create").onclick = () => enterMode("create");
 $("p-open").onclick = () => enterMode("open");
+/* iOS: one system picker call, then the same enterVault the desktop path uses.
+   ios_pick_vault does pick + bookmark + bind in Rust, so the frontend never
+   touches the bookmark — only the path it resolved to. "cancelled" is the
+   user closing the picker, not an error to show. */
+$("p-pick").onclick = iosPickVault;
+async function iosPickVault() {
+  if (vaultPath) return;                    // P2: switching is an in-process swap
+  $("p-native-err").textContent = "";
+  $("p-pick").disabled = true;
+  try {
+    vaultPath = await inv("ios_pick_vault");
+  } catch (err) {
+    const msg = String(err);
+    if (msg !== "cancelled") $("p-native-err").textContent = msg;
+    $("p-pick").disabled = false;
+    return;
+  }
+  $("p-pick").disabled = false;
+  $("picker").hidden = true;
+  await enterVault();
+}
 $("p-back").onclick = showPicker;
 $("p-recent").addEventListener("scroll", () => { if (vaultPath) { try { updateTitle(); } catch (_) {} } }, { passive: true });   // item 14: [prow:] follows the list scroll
 $("p-close").onclick = () => { $("picker").hidden = true; try { updateTitle(); } catch (_) {} };   // bug-ui #14: the census (window title) drops [precent:] with the picker, as the Esc path does
@@ -11667,10 +11706,22 @@ $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
 async function openVault(p, replace) {
   $("p-err").textContent = "";
   if (!vaultPath) {
-    try { vaultPath = await inv("pick_vault", { path: p }); }
+    // iOS: the path came from a saved bookmark, so opening it is a RESTORE, not
+    // the desktop's bind-by-path (a bare path is EPERM until its scope is open).
+    try {
+      vaultPath = PLATFORM.native_folder_picker
+        ? await inv("ios_restore_vault", { path: p })
+        : await inv("pick_vault", { path: p });
+    }
     catch (err) { $("p-err").textContent = String(err); return; }
     $("picker").hidden = true;
     await enterVault();
+    return;
+  }
+  /* iOS: replacing an open vault is the next build's in-process swap (P2). Do
+     not pretend: a recent row while a vault is open says so and changes nothing. */
+  if (PLATFORM.native_folder_picker) {
+    $("p-err").textContent = "Switching vaults inside the app arrives with the next build.";
     return;
   }
   // vbswitch: inert BEFORE the flush. It used to be set after leaveVault
@@ -11973,6 +12024,9 @@ function sgearTok() {
                                  // vault's own cssTheme is applied by loadVaultCss
                                  // when a vault opens, which is where it belongs —
                                  // a theme is a property of the vault, not the app.)
+  // platform first: the picker and the window chrome below branch on it.
+  PLATFORM = await inv("platform_info").catch(() => PLATFORM);
+  document.documentElement.dataset.platform = PLATFORM.os;
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";

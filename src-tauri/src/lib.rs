@@ -67,6 +67,8 @@ mod pdf;
 #[cfg(feature = "app")]
 mod perf;
 #[cfg(feature = "app")]
+mod platform;
+#[cfg(feature = "app")]
 mod plugin_store;
 #[cfg(feature = "app")]
 mod plugins;

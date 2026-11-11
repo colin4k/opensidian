@@ -1939,3 +1939,14 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
    inline at 12px, on the text's middle, so the button keeps its line box */
 svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }
+
+/* ---- iOS (platform_info.native_folder_picker / data-platform="ios") ----
+   The window IS the screen there: no self-drawn title bar and no resize
+   handles, because there is no WM to disagree with. Everything else keeps the
+   desktop layout until P3's touch pass. */
+html[data-platform="ios"] #wframe,
+html[data-platform="ios"] #wrz { display: none !important }
+/* the system folder picker stands where the two browser rows were; same card
+   rhythm so the recents list keeps the text column (#p-actions values above) */
+#p-native { margin: 0 -10px; padding: 0 10px }
+#p-native-err { color: var(--accent-red); font-size: 12px; min-height: 18px }

@@ -105,6 +105,16 @@ soup3 = "=0.5.0"
 dbus = "=0.9.12"
 # ---- cp-secrets (end) ----
 
+# ---- iOS vault bridge (target-gated) ----
+# The Swift document picker + security-scoped bookmark lives in its own crate so
+# a Linux build never resolves it: no swift-rs, no Swift package, no change to
+# the desktop dependency graph. On iOS, swift-rs (already in Cargo.lock at the
+# version tauri itself uses) compiles the Swift into the static library. It is a
+# plain C-ABI crate, not a tauri-plugin: no permissions or invoke plumbing is
+# wanted for six functions the app calls directly.
+[target.'cfg(target_os = "ios")'.dependencies]
+opensidian-mobilevault = { path = "plugins/mobilevault" }
+
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
 # webkit2gtk's own dependency; `=` pins it to that locked version, so this

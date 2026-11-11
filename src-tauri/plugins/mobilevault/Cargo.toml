@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# iOS-only Swift bridge for the vault root: the document picker and the
+# security-scoped bookmark that keeps it open across launches.
+#
+# WHY A SEPARATE CRATE: Swift cannot live in a Rust crate and only iOS needs it.
+# The app depends on this crate under [target.'cfg(target_os = "ios")'], so a
+# Linux build never resolves, compiles or links any of it — the desktop graph is
+# untouched. On iOS, swift-rs compiles the Swift package into a static archive
+# and rustc folds it into libopensidian_lib.a (verified: native static libs from
+# a dependency's build script are bundled into a staticlib), so Xcode needs no
+# project change.
+#
+# NO tauri-plugin: that would add a registry crate for permissions/invoke
+# plumbing this bridge does not want. The app calls plain C ABI functions and
+# gets JSON back; the only crate involved is swift-rs 1.0.8, already in
+# Cargo.lock as tauri's own iOS dependency and pinned with `=`.
+[package]
+name = "opensidian-mobilevault"
+version = "0.9.2"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "iOS document-picker + security-scoped bookmark bridge for Opensidian vault roots"
+
+[lib]
+name = "opensidian_mobilevault"
+path = "src/lib.rs"
+
+[build-dependencies]
+swift-rs = { version = "=1.0.8", features = ["build"] }

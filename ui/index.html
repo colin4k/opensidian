@@ -94,6 +94,16 @@
       </div>
       <ul id="p-recent"></ul>
     </div>
+    <!-- iOS (platform_info.native_folder_picker): the OS owns folder selection.
+         One system "folder" picker, and the security-scoped bookmark it returns
+         is what the app stores — no path typing, no directory browser. -->
+    <div id="p-native" hidden>
+      <div class="prow">
+        <div class="ptext"><b>Choose vault folder</b><span>From Files or iCloud Drive. Opensidian asks once per folder and keeps access with a bookmark.</span></div>
+        <button id="p-pick">Choose</button>
+      </div>
+      <div id="p-native-err"></div>
+    </div>
     <div id="p-sub" hidden>
       <input id="p-name" placeholder="Vault name" hidden>
       <input id="p-path" spellcheck="false" title="location">
