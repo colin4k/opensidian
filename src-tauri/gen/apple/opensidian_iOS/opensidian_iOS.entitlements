@@ -1,5 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- A vault is a FOLDER, and the only way to keep one in iCloud Drive is the
+	     app's own ubiquity container: Files, Finder and every other device see it
+	     as "iCloud 云盘 ▸ Opensidian". Without these three keys the container does
+	     not exist at all (FileManager answers nil), and the picker is the only
+	     route to iCloud — which iOS 27 refuses to complete (see the picker log).
+	     CloudDocuments (not CloudKit) is the service: it is what exposes the
+	     container as a folder in Files. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.dev.koto.opensidian</string>
+	</array>
+	<key>com.apple.developer.ubiquity-container-identifiers</key>
+	<array>
+		<string>iCloud.dev.koto.opensidian</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudDocuments</string>
+	</array>
+</dict>
 </plist>

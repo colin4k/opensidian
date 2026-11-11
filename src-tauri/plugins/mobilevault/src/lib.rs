@@ -24,6 +24,7 @@ extern "C" {
     fn opensidian_mv_download(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_open_url(url: *const c_char) -> *mut c_char;
     fn opensidian_mv_diag(message: *const c_char);
+    fn opensidian_mv_icloud_documents() -> *mut c_char;
     fn opensidian_mv_adopt(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_free(text: *mut c_char);
 }
@@ -65,6 +66,13 @@ pub fn diag(message: &str) {
 /// user picks or cancels. JSON: {path, bookmark, name} or {cancelled:true} / {error}.
 pub fn pick_folder() -> String {
     take(unsafe { opensidian_mv_pick_folder() })
+}
+
+/// The app's own iCloud container documents directory, or an error explaining
+/// why there is none. BLOCKS (it starts the ubiquity machinery): call it from a
+/// blocking thread.
+pub fn icloud_documents() -> String {
+    take(unsafe { opensidian_mv_icloud_documents() })
 }
 
 /// Adopt a folder the SYSTEM handed the app (Files "Open With", a share sheet, a

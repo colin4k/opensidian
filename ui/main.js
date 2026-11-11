@@ -11786,10 +11786,11 @@ $("p-open").onclick = () => enterMode("open");
    back), which is why the app's own folder is offered next to it. */
 $("p-pick").onclick = iosPickVault;
 $("p-local").onclick = iosLocalVault;
-/* iOS: the app's OWN folder, "On My iPhone ▸ Opensidian ▸ Vault". No permission,
-   no bookmark, no picker: the path is inside the sandbox. It is the way in when
-   the system picker refuses to hand a folder over at all. */
-async function iosLocalVault() { return iosBindVault("ios_local_vault"); }
+/* iOS: the app's OWN folder — its iCloud container ("iCloud 云盘 ▸ Opensidian",
+   which syncs) or, without iCloud Drive, the sandbox folder "On My iPhone ▸
+   Opensidian ▸ Vault". No permission, no bookmark, no picker: it is the way in
+   when the system picker refuses to hand a folder over at all. */
+async function iosLocalVault() { return iosBindVault("ios_own_vault"); }
 async function iosPickVault() { return iosBindVault("ios_pick_vault"); }
 async function iosBindVault(cmd) {
   /* With a vault already open this is a switch: flush first (into the vault we

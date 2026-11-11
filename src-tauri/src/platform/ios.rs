@@ -123,6 +123,24 @@ pub fn adopt_folder(path: &Path) -> Result<Picked, String> {
 /// over: on iOS 27 a picker that draws, navigates and cancels can still never
 /// call `didPickDocumentsAt`, for local and iCloud folders alike. Notes under
 /// this root stay on the device; syncing still needs a folder the picker gave us.
+/// The vault the app can open with no help from the system: its own iCloud
+/// container when iCloud Drive is available (that one SYNCS), else a folder
+/// inside the sandbox. `Err` only when neither exists, with the bridge's reason.
+pub fn own_vault_dir() -> Result<PathBuf, String> {
+    match answer(opensidian_mobilevault::icloud_documents()) {
+        Ok(v) => match v["path"].as_str() {
+            Some(p) => Ok(PathBuf::from(p)),
+            None => local_vault_dir(),
+        },
+        Err(why) => {
+            // No iCloud: the local folder still works, and saying which one we
+            // opened matters more than failing the button.
+            diag(&format!("icloud unavailable: {why}"));
+            local_vault_dir()
+        }
+    }
+}
+
 pub fn local_vault_dir() -> Result<PathBuf, String> {
     Ok(home().join("Documents/Vault"))
 }

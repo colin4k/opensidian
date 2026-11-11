@@ -75,6 +75,11 @@ targets:
         # place has nothing to apply to and the picker's Open button never arms
         # for a provider (iCloud Drive). Also what makes "Open in Opensidian"
         # appear in Files.
+        NSUbiquitousContainers:
+          iCloud.dev.koto.opensidian:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerName: Opensidian
+            NSUbiquitousContainerSupportedFolderLevels: Any
         CFBundleDocumentTypes:
           - CFBundleTypeName: Obsidian vault
             CFBundleTypeRole: Editor

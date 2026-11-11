@@ -40,6 +40,22 @@
 	     for iCloud Drive while our own local Documents was selectable). It is
 	     also what makes "Open in Opensidian" appear in Files at all — the other
 	     door into a vault, for when a provider refuses the picker. -->
+	<!-- The ubiquity container, as the Files/Finder location "iCloud 云盘 ▸
+	     Opensidian". IsDocumentScopePublic makes it browsable by other apps and by
+	     Files; SupportedFolderLevels=Any is what allows a vault's subfolders.
+	     The container identifier must match the entitlements file. -->
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.dev.koto.opensidian</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>Opensidian</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

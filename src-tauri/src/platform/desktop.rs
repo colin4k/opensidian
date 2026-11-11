@@ -65,6 +65,10 @@ pub fn adopt_folder(_path: &Path) -> Result<Picked, String> {
 
 /// There is no "app's own vault folder" on desktop: a vault is any directory the
 /// user can see, chosen through the app's own browser.
+pub fn own_vault_dir() -> Result<PathBuf, String> {
+    Err("this platform opens vaults through the app's own browser".into())
+}
+
 pub fn local_vault_dir() -> Result<PathBuf, String> {
     Err("this platform opens vaults through the app's own browser".into())
 }

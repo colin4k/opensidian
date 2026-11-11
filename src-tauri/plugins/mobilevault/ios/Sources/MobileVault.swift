@@ -275,6 +275,29 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
         finish("{\"cancelled\":true}")
     }
 
+    // MARK: the app's own iCloud container
+
+    /// The app's OWN folder in iCloud Drive ("iCloud 云盘 ▸ Opensidian").
+    ///
+    /// This is the one route to a synced vault that does not go through the
+    /// document picker: the container belongs to the app, so its URL is a plain
+    /// path — no security scope, no bookmark, no handover to be refused.
+    /// `url(forUbiquityContainerIdentifier:)` BLOCKS (it starts the ubiquity
+    /// machinery), which is why every caller runs off the main thread.
+    func iCloudDocuments() -> String {
+        guard let container = FileManager.default.url(forUbiquityContainerIdentifier: nil) else {
+            return mvError("iCloud Drive is not available for this app: sign in to iCloud, enable iCloud Drive, and make sure the build carries the iCloud entitlement")
+        }
+        let docs = container.appendingPathComponent("Documents", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        } catch {
+            return mvError("could not create the iCloud folder: \(error.localizedDescription)")
+        }
+        VaultBridge.diag("icloud container \(docs.path)")
+        return mvJSON(["path": docs.path, "name": "Opensidian"])
+    }
+
     // MARK: adopt
 
     /// A folder the SYSTEM handed us — Files ▸ Open With, a share sheet target,
@@ -460,6 +483,11 @@ public func opensidianMvOpenUrl(_ url: UnsafePointer<CChar>?) -> UnsafeMutablePo
         UIApplication.shared.open(target, options: [:], completionHandler: nil)
     }
     return mvDup(mvJSON(["opened": true]))
+}
+
+@_silgen_name("opensidian_mv_icloud_documents")
+public func opensidianMvICloudDocuments() -> UnsafeMutablePointer<CChar>? {
+    mvDup(VaultBridge.shared.iCloudDocuments())
 }
 
 @_silgen_name("opensidian_mv_adopt")
