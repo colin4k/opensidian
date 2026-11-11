@@ -7,6 +7,11 @@
  * typography and spacing tokens are opensidian's own; their derivation is
  * in TOKENS.md.
  */
+/* HOVER IS A FINE-POINTER AFFAIR: every :hover rule lives inside
+   @media (hover: hover). On a touch screen a tap leaves :hover stuck until the
+   next tap, so a hover-only rule reads as a row that stays selected. Desktop
+   behaviour is unchanged (a mouse matches the query); the convention is
+   enforced by tests/style_conventions.rs, which fails on an unwrapped rule. */
 /*  MERGE UNION (goal/theme-mode <- main): this file had an add-vs-add
  *  conflict at its very top. main added the SPDX/licence header above;
  *  goal/theme-mode added the THEME TOKENS block below. BOTH are kept.
@@ -415,7 +420,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           padding: 10px 0 }
 #ribbon button { background: none; color: var(--text-chrome-muted); border: 0; padding: 5px;
                  cursor: pointer; border-radius: 4px }
+@media (hover: hover) {
 #ribbon button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
 #ribbon button svg { width: 18px; height: 18px; display: block }
 /* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
    window each) instead of forcing the body wider than the viewport — 44 + 156
@@ -431,7 +439,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    shrinkable (flex-shrink 1, min-width 0) so R22's narrow-window clip holds. */
 .stab { flex: 0 1 34px; width: 34px; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
         border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
+@media (hover: hover) {
 .stab:hover { color: var(--text-chrome) }
+}
+
 .stab.active { background: var(--bg-surface); color: var(--text-chrome) }
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
@@ -440,7 +451,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* ux-4: left resize divider — overlaps #side's last 6px (negative margin,
    net 0 layout width) so #main keeps its x=200 edge for the smoke coords */
 #ldiv { flex: 0 0 6px; margin-left: -6px; z-index: 3; cursor: col-resize }
-#ldiv:hover, #ldiv:active { background: var(--border-strong) }
+#ldiv:active { background: var(--border-strong) }
+@media (hover: hover) {
+#ldiv:hover { background: var(--border-strong) }
+}
+
 #ldiv[hidden] { display: none }
 /* collapseall R3: #bar is the explorer header; .hslot = a RESERVED header slot
    (sort / auto-reveal — out of scope, spec R3): it takes a button's width and
@@ -457,9 +472,15 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    6 px padding), so #bmlist's first row does not move. */
 #bmbar { justify-content: center }
 #bmbar button { flex: 0 0 28px; padding: 4px 6px; background: none; color: var(--text-chrome-muted) }
+@media (hover: hover) {
 #bmbar button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
 #bmbar button[aria-disabled="true"] { opacity: .45; cursor: default }
+@media (hover: hover) {
 #bmbar button[aria-disabled="true"]:hover { background: none; color: var(--text-chrome-muted) }
+}
+
 #fnew { padding: 2px 6px }
 #fname { width: 100%; background: var(--bg-sidebar); color: var(--text-chrome);
          border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;
@@ -473,16 +494,25 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #sinput:focus { border-color: var(--accent-blue) }
 #sclear { background: none; color: var(--text-chrome-muted); border: 0; cursor: pointer;
           padding: 0 4px; border-radius: 4px }
+@media (hover: hover) {
 #sclear:hover { color: var(--text-chrome); background: var(--bg-surface) }
+}
+
 #sresults { flex: 1; overflow-y: auto; font-size: 12px }
 .sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600; font-size: var(--sidebar-font-size);   /* sidefont: file rows = Q1; .shit snippets keep 12px */
           cursor: pointer; white-space: nowrap; overflow: hidden;
           text-overflow: ellipsis }
+@media (hover: hover) {
 .sgroup:hover { background: var(--bg-surface) }
+}
+
 .sgroup .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
 .shit { padding: 2px 8px 2px 16px; color: var(--text-chrome-muted); cursor: pointer;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+@media (hover: hover) {
 .shit:hover { background: var(--bg-surface) }
+}
+
 .shit mark { background: none; color: var(--accent-yellow) }
 .sempty { padding: 8px; color: var(--text-chrome-dim) }
 /* bmfolder: `flex: 1` is LOAD-BEARING, not tidiness. .spane is a flex column, so
@@ -512,7 +542,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .bmrow .bmren { flex: 1; min-width: 0; background: var(--bg-base); color: var(--text-chrome);
                 border: 1px solid var(--border-focus-ring); border-radius: 3px;
                 font: inherit; padding: 0 4px; outline: none }
+@media (hover: hover) {
 .bmrow:hover { background: var(--bg-surface) }
+}
+
 /* bug-ui #11: the bookmark list is a drag surface, not prose — a press-and-drag moves a row and
    selects nothing (the explorer and tab strip are unselectable too); the inline rename field keeps
    its own text selection. */
@@ -527,13 +560,24 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    .bmrow:hover on purpose: equal specificity, so source order keeps the drag
    fills over the hover fill. */
 #bmdropline { position: fixed; height: 3px; background: var(--bm-drop-line); z-index: 98; pointer-events: none }
-.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
-.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
+.bmrow.bmdrop-into { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
+@media (hover: hover) {
+.bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
+}
+
+.bmrow.bmdrop-src { background: var(--bm-drop-src-bg) }
+@media (hover: hover) {
+.bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
+}
+
 /* ux-2 Obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;
         font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: tree ink = --nav-item-color (muted), not body ink */
+@media (hover: hover) {
 .trow:hover { background: var(--bg-surface) }
+}
+
 .trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
 .trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
@@ -558,14 +602,24 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
            overflow: hidden; text-overflow: ellipsis }
 #sgear { flex: 0 0 26px; width: 26px; height: 24px; margin-right: 6px; padding: 0; border: 0; border-radius: 4px;
          background: none; color: var(--text-chrome-muted); cursor: pointer; display: flex; align-items: center; justify-content: center }
+@media (hover: hover) {
 #sgear:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
 #sgear:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 #sgear svg { width: 15px; height: 15px; display: block }
+@media (hover: hover) {
 #vswitch:hover { background: var(--bg-surface) }
+}
+
 #main { flex: 1; display: flex; min-width: 0 }
 /* R9.6 right sidebar: localgraph of the active note, resizable divider */
 #rdiv { flex: 0 0 6px; background: var(--bg-ribbon); cursor: col-resize }
-#rdiv:hover, #rdiv:active { background: var(--border-strong) }
+#rdiv:active { background: var(--border-strong) }
+@media (hover: hover) {
+#rdiv:hover { background: var(--border-strong) }
+}
+
 #rdiv[hidden], #rside[hidden] { display: none }
 #rside { width: 260px; flex: 0 1 auto; min-width: 0; max-width: 40%;   /* R22 */
          overflow: hidden; background: var(--bg-sidebar); display: flex;
@@ -580,7 +634,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
 .blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
+@media (hover: hover) {
 .blnote:hover { background: var(--bg-surface) }
+}
+
 .blnote .tc { flex: 0 0 12px; display: flex; color: var(--text-chrome-dim) }
 .blnote .tc svg { width: 10px; height: 10px; transition: transform .1s }
 .blnote.open .tc svg { transform: rotate(90deg) }
@@ -588,17 +645,26 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .blnote .scount { color: var(--text-chrome-dim) }
 .blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: 12px;   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+@media (hover: hover) {
 .blline:hover { background: var(--bg-surface) }
+}
+
 .blline mark { background: none; color: var(--accent-yellow) }
 .outrow { padding: 4px 10px; color: var(--text-chrome); cursor: pointer; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis }
+@media (hover: hover) {
 .outrow:hover { background: var(--bg-surface) }
+}
+
 .outrow.unresolved { color: var(--text-chrome-dim); font-style: italic; cursor: default }
 .outrow.unresolved::after { content: "unresolved"; margin-left: 6px; font-size: 10px;
                             color: var(--border-strong); font-style: normal }
 .tocrow { display: flex; align-items: center; gap: 2px; padding: 3px 6px 3px 0;
           color: var(--text-chrome-muted); cursor: pointer; white-space: nowrap; overflow: hidden }
+@media (hover: hover) {
 .tocrow:hover { background: var(--bg-surface) }
+}
+
 .tocrow.active { color: var(--text-chrome); background: var(--bg-surface) }
 .tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--text-chrome-dim) }
 .tocrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
@@ -609,7 +675,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* tags pane: rows share the outline tree look; #name left, count right */
 .tagrow { display: flex; align-items: center; gap: 2px; padding: 3px 8px 3px 0;
           color: var(--text-chrome); cursor: pointer; white-space: nowrap; overflow: hidden }
+@media (hover: hover) {
 .tagrow:hover { background: var(--bg-surface) }
+}
+
 .tagrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--text-chrome-dim) }
 .tagrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
 .tagrow.open .tc svg { transform: rotate(90deg) }
@@ -620,7 +689,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #rtoggle { margin-left: auto; align-self: center; flex-shrink: 0; background: none;
            border: 0; color: var(--text-chrome-muted); cursor: pointer; padding: 3px; margin-right: 6px;
            border-radius: 4px }
+@media (hover: hover) {
 #rtoggle:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
 #rtoggle svg { width: 17px; height: 17px; display: block }
 /* split tree (M6): .split nodes wrap .pane leaves; flex weights = fractions */
 .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0 }
@@ -628,7 +700,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .split.col { flex-direction: column }
 /* R6.6: draggable divider between sibling panes */
 .divider { flex: 0 0 6px; background: var(--bg-ribbon) }
-.divider:hover, .divider:active { background: var(--border-strong) }
+.divider:active { background: var(--border-strong) }
+@media (hover: hover) {
+.divider:hover { background: var(--border-strong) }
+}
+
 .divider.row { cursor: col-resize }
 .divider.col { cursor: row-resize }
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
@@ -649,16 +725,25 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .navbtn { background: none; border: 0; color: var(--text-chrome); cursor: pointer;
           padding: 3px 5px; border-radius: 4px; display: flex; align-items: center }
 .navbtn:disabled { color: var(--text-chrome-muted); cursor: default }
+@media (hover: hover) {
 .navbtn:not(:disabled):hover { background: var(--border) }
+}
+
 .navbtn svg { width: 12px; height: 12px; display: block }
 .modebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
            padding: 0 10px; flex: 0 1 auto; min-width: 0; overflow: hidden }   /* R22: shrinkable, was flex-shrink:0 */
+@media (hover: hover) {
 .modebtn:hover { color: var(--text-chrome) }
+}
+
 .modebtn svg { width: 16px; height: 16px; display: block }
 /* graphhdr REQ-5: the ⋮ "More options" button — same muted glyph, right of the toggle */
 .morebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
            padding: 0 8px; flex: 0 1 auto; min-width: 0; overflow: hidden }
+@media (hover: hover) {
 .morebtn:hover { color: var(--text-chrome) }
+}
+
 .morebtn svg { width: 16px; height: 16px; display: block }
 .tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--text-chrome-muted);
@@ -672,7 +757,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           justify-content: center; width: 16px; height: 16px;
           cursor: pointer; border-radius: 3px; color: var(--text-chrome-faint) }
 .tab .x svg { width: 9px; height: 9px; display: block }
+@media (hover: hover) {
 .tab .x:hover { background: var(--border-strong); color: var(--text-chrome) }
+}
+
 .tab.active .x { color: var(--text-chrome-muted) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
 #tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: 99; pointer-events: none;
@@ -748,7 +836,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
   border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
   cursor: pointer; white-space: nowrap }
+@media (hover: hover) {
 .lp a.tag:hover, .preview a.tag:hover { background: var(--tag-bg-hover) }
+}
+
 .graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: var(--bg-ribbon); position: relative; z-index: 1 }   /* above .graphgl */
 /* graph-webgl: WebGL canvas BEHIND .graph (nodes + edges); .graph goes transparent and keeps events + labels */
 .graphgl { position: absolute; inset: 0; background: var(--bg-ribbon) }
@@ -762,7 +853,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .ac[hidden] { display: none }
 .ac div { padding: 4px 10px; cursor: pointer; white-space: nowrap;
           border-radius: 4px }
-.ac div.sel, .ac div:hover { background: var(--border) }
+.ac div.sel { background: var(--border) }
+@media (hover: hover) {
+.ac div:hover { background: var(--border) }
+}
+
 
 /* status bar */
 .status { position: absolute; right: 10px; bottom: 8px; display: flex;
@@ -811,7 +906,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #p-dirs { list-style: none; height: 180px; overflow-y: auto;
           border: 1px solid var(--bg-surface); border-radius: 5px; margin: 6px 0 }
 #p-dirs li { padding: 4px 10px; cursor: pointer; font-size: 13px }
+@media (hover: hover) {
 #p-dirs li:hover { background: var(--bg-surface) }
+}
+
 #p-err { color: var(--accent-red); font-size: 12px; min-height: 18px }
 /* R1.6 recent-vault rows: empty list collapses to just the top border */
 /* startscr: the list box reaches 10px into the card padding so its rows' TEXT sits on the .prow text column */
@@ -821,12 +919,18 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
             max-height: 150px; overflow-y: auto }
 #p-recent li { padding: 6px 10px; cursor: pointer; border-radius: 5px; position: relative;
                display: flex; flex-direction: column; font-size: 13px }
+@media (hover: hover) {
 #p-recent li:hover { background: var(--bg-surface) }
+}
+
 #p-recent li span { color: var(--text-chrome-muted); font-size: 11px }
 /* vaultbleed: "open in new window" on a recent row (only in an open vault) */
 #p-recent .p-newwin { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
             background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer; font-size: 15px }
+@media (hover: hover) {
 #p-recent .p-newwin:hover { color: var(--text-chrome) }
+}
+
 /* bug-ui #14: the picker close X is the same control as Settings' #sclose — same 12px stroked svg,
    same button box, same muted colour + hover, and the same place relative to its card's edge:
    #sclose sits 1px border + 12px header padding from the right, centred in the 35px header below the
@@ -835,7 +939,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
            border: 0; color: var(--text-chrome-muted); font-size: 14px; cursor: pointer;
            display: inline-flex; align-items: center; justify-content: center }
 #p-close svg { display: block }
+@media (hover: hover) {
 #p-close:hover { color: var(--text-chrome) }
+}
+
 #bar button svg, #bmbar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
 #vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
 
@@ -848,7 +955,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
            max-width: 100vw; max-height: 100vh; overflow: auto }
 .ctxmenu div { padding: 6px 14px; cursor: pointer; font-size: 13px;
                color: var(--text-chrome); white-space: nowrap }
+@media (hover: hover) {
 .ctxmenu div:hover { background: var(--border) }
+}
+
 /* bmmenu (docs/recon-bmmenu/README.md): the bookmark-row menu has separators and
    rows this tree cannot back. .sep is a real child so the census reads "---" where
    Obsidian draws a rule; .dis is the settings rows' disabled treatment (R30 note in
@@ -901,7 +1011,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph-controls .gf-btns { position: absolute; top: 6px; right: 6px; z-index: 1; display: flex; gap: 2px }
 .graph-controls .gf-btn { width: 26px; height: 26px; padding: 5px; border: 0; border-radius: 4px; background: none;
   color: var(--text-muted); cursor: pointer; line-height: 0; box-sizing: border-box }
+@media (hover: hover) {
 .graph-controls .gf-btn:hover { background: var(--border); color: var(--text-chrome) }
+}
+
 .graph-controls .gf-btn svg { width: 16px; height: 16px; display: block }
 .graph-controls .mod-open { display: none }
 .graph-controls.is-close { width: 44px; padding: 6px 0 }
@@ -947,7 +1060,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph-controls .graph-color-group input[type=color] { -webkit-user-drag: none; user-select: none }
 .graph-controls .graph-color-group .clickable-icon { flex: 0 0 auto; width: 26px; height: 26px; padding: 5px; box-sizing: border-box; border-radius: 4px;
   color: var(--text-muted); cursor: pointer; line-height: 0 }
+@media (hover: hover) {
 .graph-controls .graph-color-group .clickable-icon:hover { background: var(--border); color: var(--text-chrome) }
+}
+
 .graph-controls .graph-color-group .clickable-icon svg { width: 16px; height: 16px; display: block }
 .graph-controls .graph-color-button-container { padding: 6px 12px }
 .graph-controls .gc-newgroup { width: 100%; height: 30px; font: inherit; font-size: 13px; border: 0; border-radius: 4px; cursor: pointer;
@@ -978,7 +1094,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }
-#mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: selected suggestion */
+#mlist .mrow.sel { background: var(--background-modifier-hover) }
+@media (hover: hover) {
+#mlist .mrow:hover { background: var(--background-modifier-hover) }
+}
+   /* themematch: selected suggestion */
 #mlist .mhint { color: var(--text-chrome-faint); font-size: 11px; margin-left: 12px; white-space: nowrap }
 #mlist .mempty { padding: 8px 14px; color: var(--text-chrome-faint); font-size: 12px }
 /* goal qscreate: stock's create hint is accent-coloured, and its static instructions
@@ -1145,7 +1265,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--accent-blue) }
-.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: link hover ink */
+@media (hover: hover) {
+.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }
+}
+   /* themematch: link hover ink */
 .lp a.wiki { text-decoration: none }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
 .lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
@@ -1166,13 +1289,19 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #shead { height: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
          padding: 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--border); font-weight: 600 }
 #sclose { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer; font-size: 14px }
+@media (hover: hover) {
 #sclose:hover { color: var(--text-chrome) }
+}
+
 #sbody { flex: 1; display: flex; min-height: 0 }
 #snav { width: 180px; box-sizing: border-box; background: var(--bg-base); border-right: 1px solid var(--border);
         padding: 8px 0; overflow-y: auto }
 .snavh { padding: 4px 14px; color: var(--text-chrome-faint); font-size: 11px; text-transform: uppercase }
 .snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
+@media (hover: hover) {
 .snavi:hover { background: var(--bg-surface) }
+}
+
 .snavi.sel { background: var(--border) }
 #spage { flex: 1; min-width: 0; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column }
 /* R30 row panes: card inset, a fixed row height for a one-line description
@@ -1214,7 +1343,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
 .sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
+@media (hover: hover) {
 .sctl.dropdown.live:hover { border-color: var(--border-strong) }
+}
+
 .sctl.dropdown.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
 .sctl.text { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
              border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-faint); white-space: nowrap; overflow: hidden }
@@ -1226,20 +1358,29 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    live Font size slider, and the chooser sub-page (docs/fontset/recon.md
    REQ-1..7, REQ-16). Same tokens as the rest of the pane. */
 .srow.live { cursor: pointer }
+@media (hover: hover) {
 .srow.live:hover { background: var(--bg-surface) }
+}
+
 .sctl.nav.live .nv { margin-right: 4px; color: var(--text-chrome-muted) }
 .sctl.slider.live { gap: 10px }
 .sctl.slider.live .val { min-width: 18px; text-align: right; color: var(--text-chrome-muted) }
 .frange { width: 150px; margin: 0; accent-color: var(--interactive-accent); cursor: pointer }
 .fbtn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
         padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-chrome-faint); cursor: pointer }
+@media (hover: hover) {
 .fbtn:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
 .fbtn[aria-disabled="true"] { opacity: .4; cursor: default; pointer-events: none }
 .fgrip { cursor: grab }
 #spage.fontpage .fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px }
 .fback { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
          border: 0; border-radius: 4px; background: none; color: var(--text-chrome); cursor: pointer }
+@media (hover: hover) {
 .fback:hover { background: var(--bg-surface) }
+}
+
 .ftitle { font-size: 16px; font-weight: 600; color: var(--text-chrome) }
 .fdesc { margin: 0 0 16px }
 .fselcard { margin-bottom: 16px }
@@ -1248,7 +1389,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
         border-bottom: 1px solid var(--bg-surface) }
 .scard > .frow:last-child { border-bottom: 0 }
 .fcand { cursor: pointer }
+@media (hover: hover) {
 .fcand:hover { background: var(--bg-surface) }
+}
+
 .fsearch { display: block; width: calc(100% - 24px); margin: 12px; height: 30px; box-sizing: border-box; padding: 0 8px;
            background: var(--bg-sidebar); color: var(--text-chrome); border: 1px solid var(--border); border-radius: 4px;
            font: inherit; outline: none }
@@ -1290,10 +1434,16 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .hkkey.conf { background: var(--accent-red); color: var(--text-on-accent) }
 .hkx { width: 14px; text-align: center; cursor: pointer; font-size: 11px; color: var(--text-chrome-muted) }
 .hkkey.conf .hkx { color: var(--text-on-accent) }
+@media (hover: hover) {
 .hkx:hover { color: var(--accent-red) }
+}
+
 .hkbtn { width: 24px; height: 24px; box-sizing: border-box; padding: 0; background: var(--bg-surface); color: var(--text-chrome);
          border: 0; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 24px }
+@media (hover: hover) {
 .hkbtn:hover { background: var(--border) }
+}
+
 .hkbtn, .hkx, #sclose { display: inline-flex; align-items: center; justify-content: center }
 .hkbtn svg, .hkx svg, #sclose svg { display: block }
 /* ---------- R15 TYPOGRAPHY (docs/requirements.md §15): dark-theme tokens ---------- */
@@ -1559,7 +1709,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* LP: the task li has no list margin (the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
 .lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
 .lp ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-margin-inline-start) - 2px); margin-inline-end: calc(0.6em - 4px) }
+@media (hover: hover) {
 .lp input[type=checkbox]:hover, .preview input[type=checkbox]:hover { border-color: var(--text-muted) }
+}
+
 .lp input[type=checkbox]:checked, .preview input[type=checkbox]:checked { background-color: var(--checkbox-color); border-color: var(--checkbox-color) }
 .lp input[type=checkbox]:checked:after, .preview input[type=checkbox]:checked:after { content: ""; top: -1px; inset-inline-start: -1px; position: absolute;
   width: var(--checkbox-size); height: var(--checkbox-size); display: block; background-color: var(--checkbox-marker-color);
@@ -1709,8 +1862,14 @@ body.floorrelayout #main { padding-right: 1px }
 #wf-min { right: 92px }
 #wf-max { right: 48px }
 #wf-close { right: 4px }
+@media (hover: hover) {
 #wframe button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
+@media (hover: hover) {
 #wf-close:hover { background: var(--accent-red); color: var(--bg-ribbon) }
+}
+
 /* R33.4 keyboard: every control is a real <button>, so Tab reaches it and
    Enter/Space activates it — the focus ring has to be visible or "operable by
    keyboard" is a claim nobody can see. */
@@ -1769,7 +1928,10 @@ body.floorrelayout #main { padding-right: 1px }
              color: var(--text-chrome-muted); font-size: 12px }
 .findbar button { padding: 1px 5px; border: 0; border-radius: 4px; cursor: pointer;
                   background: var(--transparent); color: var(--text-chrome-muted); font-size: 12px }
+@media (hover: hover) {
 .findbar button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+}
+
 /* R26.21: the reduced bar of reading view. The arrows are hidden, not removed —
    `hidden` is what the census counts ([fvels:]), and a control that is not
    displayed offers nothing. R26.24 is why they are gone: nothing to navigate. */
@@ -1813,7 +1975,10 @@ span.is-flashing { background: var(--highlight-yellow) }
 .pdf-embed .pdf-toolbar button {
   width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none;
   color: inherit; font-size: 16px; line-height: 26px; cursor: pointer }
+@media (hover: hover) {
 .pdf-embed .pdf-toolbar button:hover { background: var(--bg-base) }
+}
+
 .pdf-embed .pdf-zoom-out::before { content: "\2212" }
 .pdf-embed .pdf-zoom-in::before { content: "+" }
 .pdf-embed .pdf-container {
@@ -1840,14 +2005,20 @@ span.is-flashing { background: var(--highlight-yellow) }
    plugins pane. Theme tokens only. ==== */
 .cpb-btn { flex: none; height: 28px; padding: 0 12px; border-radius: 4px; border: 1px solid var(--border);
            background: var(--bg-surface); color: var(--text-chrome); font: inherit; font-size: 13px; cursor: pointer }
+@media (hover: hover) {
 .cpb-btn:hover { border-color: var(--border-strong) }
+}
+
 .cpb-btn:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
 .cpb-btn:disabled { opacity: .6; cursor: default }
 .cpb-btn.cpb-cta { background: var(--bg-button-primary); color: var(--text-on-accent); border-color: var(--bg-button-primary) }
 .cpb-btn.cpb-danger { color: var(--text-error) }
 .cpb-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px }
 .cpb-btn.cpb-back { border: 0; background: none; padding: 0 4px; color: var(--text-chrome-muted) }
+@media (hover: hover) {
 .cpb-btn.cpb-back:hover { color: var(--text-chrome) }
+}
+
 .cpb-count { flex: 1; text-align: right; color: var(--text-chrome-faint); font-size: 12px }
 .cpb-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap }
 .cpb-q { flex: 1 1 220px; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 10px; border-radius: 4px;
@@ -1857,7 +2028,10 @@ span.is-flashing { background: var(--highlight-yellow) }
 .cpb-btn.cpb-sortb { height: 30px; padding: 0 10px }
 .cpb-btn.cpb-sortb.on { border-color: var(--interactive-accent); color: var(--text-chrome) }
 .cpb-row { cursor: pointer; min-height: 64px }
+@media (hover: hover) {
 .cpb-row:hover { background: var(--bg-surface) }
+}
+
 .cpb-row .sdesc { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical }
 .cpb-more { margin: 10px 4px; color: var(--text-chrome-faint); font-size: 12px }
 .cpb-head { margin: 4px 0 12px }
