@@ -31,6 +31,11 @@ pub struct NoteMeta {
     /// tags: unique, sorted. inline #tag tokens outside code/URLs plus
     /// frontmatter `tags:` (YAML list or comma string), no leading '#'
     pub tags: Vec<String>,
+    /// P4-lazy: this meta was built by READING the file (or by a save). A
+    /// `build_meta` entry starts false — names only, for an instant first paint —
+    /// and the background fill replaces it. The merge never overwrites a true
+    /// one, so a save that lands while the fill is reading is not lost.
+    parsed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -351,7 +356,7 @@ pub fn tags_in(s: &str) -> Vec<String> {
 
 /// content -> NoteMeta (links + tags parsed once)
 pub fn parse(c: String) -> NoteMeta {
-    NoteMeta { links: links_in(&c), tags: tags_in(&c), content: c }
+    NoteMeta { links: links_in(&c), tags: tags_in(&c), content: c, parsed: true }
 }
 
 pub fn links_in(s: &str) -> Vec<String> {
@@ -551,7 +556,7 @@ pub fn attachments_of(root: &Path) -> Vec<String> {
 /// switch wait for it). Same bytes per note (read_to_string, unreadable ->
 /// ""), same parse; contiguous chunks keep the input order, and the caller
 /// collects into the BTreeMap anyway. std::thread::scope only, no new crate.
-fn read_parse_all(root: &Path, notes: Vec<String>) -> Vec<(String, NoteMeta)> {
+pub fn read_parse_all(root: &Path, notes: Vec<String>) -> Vec<(String, NoteMeta)> {
     let one = |n: String| {
         let c = fs::read_to_string(format!("{}.md", root.join(&n).display())).unwrap_or_default();
         let m = parse(c);
@@ -606,6 +611,63 @@ impl Index {
         ix.refresh_names();
         ix.rebuild_backlinks();
         ix
+    }
+
+    /// P4-lazy: NAMES ONLY, no file reads. This is what iOS binds with, so the
+    /// window paints the tree and can open a note before a single note has been
+    /// parsed; the links/tags/content arrive from the background fill below.
+    pub fn build_meta(root: &Path) -> Index {
+        let mut ix = Index::default();
+        let (mut notes, mut imgs, mut cloud) = (Vec::new(), Vec::new(), Vec::new());
+        walk(root, root, &mut notes, &mut imgs, &mut cloud);
+        notes.sort();
+        imgs.sort();
+        cloud.sort();
+        cloud.dedup();
+        ix.images = imgs;
+        ix.cloud = cloud;
+        for n in notes {
+            ix.notes.insert(n, NoteMeta::default());
+        }
+        ix.root = Some(root.to_path_buf());
+        ix.refresh_names();
+        ix
+    }
+
+    /// notes that still need the fill, capped (sorted, stable order)
+    pub fn unparsed(&self, max: usize) -> Vec<String> {
+        self.notes
+            .iter()
+            .filter(|(_, m)| !m.parsed)
+            .take(max)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.notes.values().filter(|m| !m.parsed).count()
+    }
+
+    /// Apply a batch the fill read OUTSIDE the lock. Two rules, both about not
+    /// losing work: a meta that is already parsed wins (a save landed while the
+    /// batch was being read), and a name that is gone from `notes` is not
+    /// resurrected (it was deleted meanwhile; the watcher owns that story).
+    pub fn apply_parsed(&mut self, parsed: Vec<(String, NoteMeta)>) {
+        let mut changed = false;
+        for (name, meta) in parsed {
+            match self.notes.get(&name) {
+                Some(cur) if cur.parsed => {}
+                Some(_) => {
+                    self.notes.insert(name, meta);
+                    changed = true;
+                }
+                None => {}
+            }
+        }
+        if changed {
+            self.refresh_names();
+            self.rebuild_backlinks();
+        }
     }
 
     /// notes whose bytes are still in iCloud (sorted, no `.md`)
@@ -765,6 +827,9 @@ impl Index {
             Some(m) => {
                 m.content = content.to_string();
                 m.tags = tags_in(content);
+                // a save is the freshest read there is: the lazy fill must not
+                // replace it with what it read a moment earlier
+                m.parsed = true;
                 if m.links == links {
                     // plain save, link set unchanged (the common case): no
                     // edge work at all
@@ -1163,6 +1228,85 @@ mod cloud_tests {
         assert_eq!(ix.content("Both"), Some("body"));
         assert!(!ix.is_cloud_only("Both"), "real bytes win over the placeholder");
         assert!(ix.cloud_only().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+/* P4-lazy: a names-only index, filled in the background. The three failure
+   modes worth pinning are (1) the tree cannot see notes yet, (2) the fill
+   overwrites a save that landed while it was reading, (3) the fill resurrects a
+   note that was deleted meanwhile. */
+#[cfg(test)]
+mod lazy_tests {
+    use super::*;
+    use std::fs;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("idx-lazy-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn build_meta_lists_everything_and_reads_nothing() {
+        let root = tmp("meta");
+        fs::write(root.join("A.md"), "[[B]] #x").unwrap();
+        fs::write(root.join("B.md"), "b").unwrap();
+        let ix = Index::build_meta(&root);
+        assert_eq!(ix.names(), &["A".to_string(), "B".to_string()], "tree is complete before any parse");
+        assert_eq!(ix.content("A"), Some(""), "known name, no content yet");
+        assert!(ix.links("A").is_empty());
+        assert!(ix.tags("A").is_empty());
+        assert_eq!(ix.pending_count(), 2);
+        assert_eq!(ix.unparsed(1).len(), 1, "the fill takes bounded batches");
+
+        let full = Index::build(&root);
+        assert_eq!(full.pending_count(), 0);
+        assert_eq!(full.content("A"), Some("[[B]] #x"));
+        assert_eq!(full.tags("A"), &["x".to_string()]);
+        assert_eq!(full.backlinks("B"), vec!["A".to_string()]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_fill_never_overwrites_a_save_that_landed_meanwhile() {
+        let root = tmp("race");
+        fs::write(root.join("A.md"), "old [[X]]").unwrap();
+        let mut ix = Index::build_meta(&root);
+        ix.upsert("A", "typed by the user");      // the save marks it parsed
+        let stale = Index::build(&root);          // what the fill read: "old [[X]]"
+        ix.apply_parsed(stale.notes.into_iter().collect());
+        assert_eq!(ix.content("A"), Some("typed by the user"), "a save during the fill wins");
+        assert_eq!(ix.pending_count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_fill_does_not_resurrect_a_deleted_note() {
+        let root = tmp("gone");
+        fs::write(root.join("A.md"), "a").unwrap();
+        let mut ix = Index::build_meta(&root);
+        let stale = Index::build(&root);
+        ix.remove("A");                            // deleted after the fill read it
+        ix.apply_parsed(stale.notes.into_iter().collect());
+        assert!(!ix.names().iter().any(|n| n == "A"), "the deleted note stays deleted");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn applying_a_full_fill_matches_a_plain_build() {
+        let root = tmp("same");
+        fs::write(root.join("A.md"), "[[B]] #tag").unwrap();
+        fs::write(root.join("B.md"), "back to [[A]]").unwrap();
+        let mut meta = Index::build_meta(&root);
+        meta.apply_parsed(Index::build(&root).notes.into_iter().collect());
+        let plain = Index::build(&root);
+        assert_eq!(meta.names(), plain.names());
+        assert_eq!(meta.backlinks("A"), plain.backlinks("A"));
+        assert_eq!(meta.backlinks("B"), plain.backlinks("B"));
+        assert_eq!(meta.tags("A"), plain.tags("A"));
+        assert_eq!(meta.pending_count(), 0);
         let _ = fs::remove_dir_all(&root);
     }
 }

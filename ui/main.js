@@ -12153,6 +12153,23 @@ async function onVaultChanged(c) {
   updateTitle();
 }
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
+/* P4-lazy: the background fill finished (or reported progress). Names were
+   already in the tree; this is where backlinks, tags, the open search and any
+   graph view stop being partial. progress events (pending > 0) are ignored on
+   purpose: re-running all of that 40 times while typing would be worse than
+   the wait. */
+let idxDone = false;
+async function onVaultIndexed(p) {
+  if (((p && p.pending) || 0) > 0 || idxDone) return;
+  idxDone = true;
+  await refreshTree();
+  await refreshBm();
+  if (sidePane === "search" && $("sinput").value.trim()) await runSearch();
+  if (rightOpen) rSchedule();
+  for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
+  updateTitle();
+}
+TAURI.event.listen("vault-indexed", e => onVaultIndexed(e.payload));
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview

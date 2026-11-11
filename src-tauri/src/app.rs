@@ -116,6 +116,62 @@ impl std::fmt::Display for BindErr {
 /// Order: refuse if bound -> take the vault's flock (Busy = open in another
 /// process, vaultbleed B) -> claim the root. The lock is stored only after the
 /// root claim succeeded; a failed claim drops (releases) it.
+/// iOS binds NAMES ONLY (build_meta) and fills the rest from a background
+/// thread, so the window paints the tree and can open a note before a single
+/// file has been read. Desktop keeps the one-shot full build it always had —
+/// same code, same timing, no new moving part in the release path.
+fn build_index_for_platform(p: &Path) -> Index {
+    #[cfg(target_os = "ios")]
+    {
+        Index::build_meta(p)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Index::build(p)
+    }
+}
+
+/* P4-lazy: the fill. Batches go through the index lock only to take names and
+   to apply results — the reads happen OUTSIDE it, so a note can be opened and
+   saved while this runs. Two guards:
+     - the vault root is re-checked every batch: switching vaults replaces the
+       index, and an old fill must not pour old-vault parses into the new one;
+     - apply_parsed never overwrites a meta a save already marked parsed and
+       never resurrects a name that is gone (index.rs).
+   `vault-indexed` carries the remaining count; the final event has pending 0. */
+#[cfg(target_os = "ios")]
+fn maybe_spawn_fill(app: &tauri::AppHandle, v: &Vault) {
+    use tauri::Emitter;
+    if v.index.lock().unwrap().pending_count() == 0 {
+        return;
+    }
+    let Some(root) = cur_vault(v) else { return };
+    let h = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            let st = h.state::<Vault>();
+            if cur_vault(&st).as_deref() != Some(root.as_path()) {
+                return; // the vault was replaced: this fill belongs to the old one
+            }
+            let batch = st.index.lock().unwrap().unparsed(48);
+            if batch.is_empty() {
+                let _ = h.emit("vault-indexed", serde_json::json!({"pending": 0, "done": true}));
+                return;
+            }
+            let parsed = index::read_parse_all(&root, batch);
+            st.index.lock().unwrap().apply_parsed(parsed);
+            let pending = st.index.lock().unwrap().pending_count();
+            let _ = h.emit("vault-indexed", serde_json::json!({"pending": pending}));
+            // 48 notes per turn: a phone stays responsive (and cool) on a vault
+            // of thousands without stretching the fill into minutes
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+    });
+}
+
+#[cfg(not(target_os = "ios"))]
+fn maybe_spawn_fill(_app: &tauri::AppHandle, _v: &Vault) {}
+
 fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
     // Desktop: set once, forever (one process, one vault). iOS: replacing the
     // vault IS the feature, because there is no second process to spawn for it;
@@ -153,7 +209,7 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     builtins::seed_and_record(p);
     ensure_app_json(p);
     let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
-    let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
+    let ix = span_timed!("index_build", build_index_for_platform(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
     *v.seed.lock().unwrap() = Some(base);
     Ok(())
@@ -1927,6 +1983,10 @@ fn platform_info() -> platform::PlatformInfo {
 struct VaultIssues {
     cloud_only: Vec<String>,
     conflicts: Vec<String>,
+    /// notes the lazy fill has not parsed yet (0 on desktop, and 0 once the
+    /// fill finishes): the UI uses it to say "indexing" instead of showing a
+    /// silently incomplete backlink/tag pane.
+    pending: usize,
 }
 
 fn is_conflict_name(name: &str) -> bool {
@@ -1939,6 +1999,7 @@ fn vault_issues(v: State<Vault>) -> VaultIssues {
     VaultIssues {
         cloud_only: ix.cloud_only().to_vec(),
         conflicts: ix.names().iter().filter(|n| is_conflict_name(n)).cloned().collect(),
+        pending: ix.pending_count(),
     }
 }
 
@@ -1954,6 +2015,7 @@ async fn ios_pick_vault(app: tauri::AppHandle) -> Result<String, String> {
     let p = PathBuf::from(&picked.path);
     vault_rules(&p)?;
     bind_vault(&app.state::<Vault>(), &p)?;
+    maybe_spawn_fill(&app, &app.state::<Vault>());
     bookmark_put(&picked.path, &picked.bookmark, &picked.name);
     persist_vault(&p);
     Ok(picked.path)
@@ -1968,6 +2030,7 @@ async fn ios_restore_vault(app: tauri::AppHandle, path: String) -> Result<String
     let p = PathBuf::from(&r.path);
     vault_rules(&p)?;
     bind_vault(&app.state::<Vault>(), &p)?;
+    maybe_spawn_fill(&app, &app.state::<Vault>());
     let current = if r.stale && !r.bookmark.is_empty() { r.bookmark.clone() } else { bookmark_get(&path).unwrap_or_default() };
     if r.path != path {
         bookmark_drop(&path);
@@ -6673,6 +6736,13 @@ pub fn run() {
                 page_window(app.handle(), wc)?;
             }
             spawn_watcher(app.handle().clone());
+            // P4-lazy: on iOS the index was built names-only; fill the content,
+            // links and tags off the UI thread now that the window exists.
+            {
+                use tauri::Manager;
+                let v = app.state::<Vault>();
+                maybe_spawn_fill(app.handle(), &v);
+            }
             #[cfg(feature = "devui")]
             devui::start(app.handle().clone()); // goal devui: no-op without OPENSIDIAN_DEV_UI
             install_term(app.handle().clone()); // tab-dataloss: SIGTERM flushes, bounded
