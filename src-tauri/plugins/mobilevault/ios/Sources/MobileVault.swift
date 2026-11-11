@@ -148,14 +148,19 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
             // is verified in the iOS 27.2 simulator.
             picker.modalPresentationStyle = .pageSheet
             picker.shouldShowFileExtensions = true
-            /* NO directoryURL. Every value we could honestly pass is either
-               unreachable for this sandbox (free signing has no iCloud
-               container, and a bare "/var/mobile/Library/Mobile Documents/
-               com~apple~CloudDocs" makes iOS wait on a URL we cannot access —
-               the picker then hangs) or a path whose security scope is not
-               open yet. The picker's OWN memory of the last location is the
-               right default: it is always a location the user already chose
-               and iOS can resolve. */
+            /* A CONCRETE starting directory, not the picker's own "Recents".
+               In folder mode a picker that opens on a root where nothing is
+               selectable shows a live-looking Open button that does nothing when
+               tapped — no delegate call, no dismissal, which is exactly what the
+               device log shows (presented, then silence). Our own Documents is
+               the one directory this app is guaranteed to be able to select, and
+               it is also a real location in Files ("On My iPhone ▸ Opensidian")
+               so the picker service can resolve it. Nothing outside the sandbox
+               here: pointing directoryURL at an iCloud path we cannot read made
+               iOS wait on it instead of falling back, and the picker hung. */
+            picker.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            let start = picker.directoryURL?.path ?? "-"
+            VaultBridge.diag("picker start=\(start) exists=\(FileManager.default.fileExists(atPath: start))")
             self.pending = { json in box.deliver(json) }
             host.present(picker, animated: true) {
                 VaultBridge.diag("presented")
