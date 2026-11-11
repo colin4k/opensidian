@@ -33,6 +33,34 @@
 	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- iOS 26+ / Xcode 26+ SDK: UIKit REFUSES to launch an app that does not
+	     declare UIScene adoption — UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption
+	     traps on the main thread at launch. tao (under tauri-runtime-wry)
+	     already implements the scene delegate and answers
+	     application:configurationForConnectingSceneSession:, so the manifest
+	     only has to DECLARE adoption; no delegate class is named here. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<!-- iOS 27's validator inspects ONLY this static manifest; tao's
+		     programmatic application:configurationForConnectingSceneSession:
+		     does not count. A manifest with no configuration is still "not
+		     adopted", so the window role names tao's delegate (registered by
+		     tao 0.37 as the Objective-C class TaoSceneDelegate). -->
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>TaoScene</string>
+					<key>UISceneDelegateClassName</key>
+					<string>TaoSceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

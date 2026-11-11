@@ -12,7 +12,7 @@
 #
 # NO tauri-plugin: that would add a registry crate for permissions/invoke
 # plumbing this bridge does not want. The app calls plain C ABI functions and
-# gets JSON back; the only crate involved is swift-rs 1.0.8, already in
+# gets JSON back; the only crate involved is swift-rs 1.0.9, already in
 # Cargo.lock as tauri's own iOS dependency and pinned with `=`.
 [package]
 name = "opensidian-mobilevault"
@@ -27,4 +27,4 @@ name = "opensidian_mobilevault"
 path = "src/lib.rs"
 
 [build-dependencies]
-swift-rs = { version = "=1.0.8", features = ["build"] }
+swift-rs = { version = "=1.0.9", features = ["build"] }

@@ -58,9 +58,56 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
         lock.unlock()
     }
 
+    // MARK: diagnostics
+
+    /// Append one line to Documents/opensidian-diagnostics.log, which the Files
+    /// app can read (UIFileSharingEnabled). This exists because a device whose
+    /// Console is not reachable still has to report WHICH step of a picker
+    /// presentation happened: presenting, picked, cancelled, or nothing at all.
+    static func diag(_ message: String) {
+        NSLog("[opensidian] %@", message)
+        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let file = dir.appendingPathComponent("opensidian-diagnostics.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        guard let data = "\(stamp) \(message)\n".data(using: .utf8) else { return }
+        if let size = try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber,
+           size.intValue > 512 * 1024 {
+            try? FileManager.default.removeItem(at: file)   // keep it small enough to attach
+        }
+        if let handle = try? FileHandle(forWritingTo: file) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: file)
+        }
+    }
+
+    /// While the caller waits on the picker, ask the main thread every two
+    /// seconds whether it is still turning. A picker that "hangs" is either the
+    /// system's own UI still enumerating a provider (main thread answers, screen
+    /// does not change) or our process wedged somewhere (no answer). Those need
+    /// opposite fixes, and on a device whose Console is unreachable the log is
+    /// the only place to tell them apart.
+    private func watchMainThread(_ box: ResultBox) {
+        DispatchQueue.global(qos: .utility).async {
+            var ticks = 0
+            while !box.answered && ticks < 150 {
+                let mark = DispatchSemaphore(value: 0)
+                DispatchQueue.main.async { mark.signal() }
+                if mark.wait(timeout: .now() + 2) == .timedOut {
+                    VaultBridge.diag("main thread did not turn for 2s while the picker was up")
+                }
+                ticks += 1
+                usleep(2_000_000)
+            }
+        }
+    }
+
     // MARK: pick
 
     func pickFolder() -> String {
+        VaultBridge.diag("pickFolder enter main=\(Thread.isMainThread)")
         if Thread.isMainThread {
             // Never wait on the runloop we are about to need.
             return mvError("folder picker called on the main thread; call it from a worker thread")
@@ -76,14 +123,68 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
                 return
             }
             self.presenting = true
+            let scenes = UIApplication.shared.connectedScenes.map { scene -> String in
+                let kind = scene is UIWindowScene ? "win" : "other"
+                let windows = (scene as? UIWindowScene)?.windows.count ?? -1
+                return "\(kind):\(scene.activationState.rawValue):\(windows)"
+            }.joined(separator: ",")
+            let window = host.viewIfLoaded?.window
+            // Which windows this scene has, and which one we are presenting into:
+            // a sheet presented into a window the user cannot see looks exactly
+            // like a picker that never loaded.
+            let wins = (window?.windowScene?.windows ?? []).map { w -> String in
+                let root = w.rootViewController.map { String(describing: type(of: $0)) } ?? "-"
+                return "\(type(of: w))[\(NSCoder.string(for: w.frame)) key=\(w.isKeyWindow) hidden=\(w.isHidden) lvl=\(w.windowLevel.rawValue) root=\(root)]"
+            }.joined(separator: " ")
+            VaultBridge.diag("present from \(type(of: host)) window=\(window != nil) scene=\(window?.windowScene != nil) frame=\(window.map { NSCoder.string(for: $0.bounds) } ?? "-") app=\(UIApplication.shared.applicationState.rawValue) scenes=[\(scenes)] wins=[\(wins)]")
             let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
             picker.delegate = self
             picker.allowsMultipleSelection = false
-            picker.modalPresentationStyle = .formSheet
+            // pageSheet, and not formSheet: on iPhone 26/27 a form sheet is a
+            // centred CARD, which clips the location list away (the user then sees
+            // only "On My iPhone" and cannot reach iCloud Drive). A page sheet is
+            // the full-width one the system Files app uses. Asking for fullScreen
+            // changes nothing: the picker service renders itself as a sheet, which
+            // is verified in the iOS 27.2 simulator.
+            picker.modalPresentationStyle = .pageSheet
+            picker.shouldShowFileExtensions = true
+            /* NO directoryURL. Every value we could honestly pass is either
+               unreachable for this sandbox (free signing has no iCloud
+               container, and a bare "/var/mobile/Library/Mobile Documents/
+               com~apple~CloudDocs" makes iOS wait on a URL we cannot access —
+               the picker then hangs) or a path whose security scope is not
+               open yet. The picker's OWN memory of the last location is the
+               right default: it is always a location the user already chose
+               and iOS can resolve. */
             self.pending = { json in box.deliver(json) }
-            host.present(picker, animated: true)
+            host.present(picker, animated: true) {
+                VaultBridge.diag("presented")
+                // Record what the sheet actually holds. A cold Files service
+                // shows an EMPTY sheet for a long time before it draws, and this
+                // line is what tells "still starting" apart from "the content
+                // view never arrived".
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    let subs = picker.view.subviews.map { "\(type(of: $0)):\(NSCoder.string(for: $0.frame))" }.joined(separator: " ")
+                    VaultBridge.diag("picker view \(NSCoder.string(for: picker.view.bounds)) subs=[\(subs)]")
+                }
+            }
         }
-        return box.wait(seconds: 600)
+        watchMainThread(box)
+        let answer = box.wait(seconds: 300)
+        VaultBridge.diag("pickFolder return \(answer.prefix(60))")
+        if answer.contains("did not answer in time") {
+            expired()
+        }
+        return answer
+    }
+
+    /// a picker that never called back must not lock every later attempt behind
+    /// "already open": clear the in-flight state when the wait expires
+    private func expired() {
+        DispatchQueue.main.async {
+            self.pending = nil
+            self.presenting = false
+        }
     }
 
     private func finish(_ json: String) {
@@ -94,6 +195,7 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        VaultBridge.diag("picked \(urls.first?.path ?? "-")")
         guard let url = urls.first else {
             finish(mvError("no folder was picked"))
             return
@@ -117,6 +219,7 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        VaultBridge.diag("cancelled")
         finish("{\"cancelled\":true}")
     }
 
@@ -197,9 +300,13 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
     // MARK: presentation
 
     private static func topViewController() -> UIViewController? {
+        // Only scenes that are actually on screen can present: an inactive scene's
+        // window is not in the responder chain, and presenting from it yields a
+        // sheet with the wrong geometry (or none at all).
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let window = scenes.flatMap { $0.windows }.first { $0.isKeyWindow }
-            ?? scenes.first?.windows.first
+        let live = scenes.filter { $0.activationState == .foregroundActive }
+        let windows = (live.isEmpty ? scenes : live).flatMap { $0.windows }
+        let window = windows.first { $0.isKeyWindow } ?? windows.first
         var top = window?.rootViewController
         while let next = top?.presentedViewController {
             top = next
@@ -215,10 +322,19 @@ private final class ResultBox {
     private let sem = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var value: String?
+    private var settled = false
+
+    /// Has an answer arrived? Read by the main-thread watcher.
+    var answered: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return settled
+    }
 
     func deliver(_ json: String) {
         lock.lock()
         if value == nil { value = json }
+        settled = true
         lock.unlock()
         sem.signal()
     }

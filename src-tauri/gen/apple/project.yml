@@ -58,6 +58,19 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.9.2
         CFBundleVersion: "0.9.2"
+        # iOS 26+/Xcode 26+: launching without scene adoption is a hard trap
+        # (UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption). tao
+        # provides the delegate; the plist only declares adoption. Kept here so
+        # a regenerated Info.plist (xcodegen) keeps the key.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: TaoScene
+                UISceneDelegateClassName: TaoSceneDelegate
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: opensidian_iOS/opensidian_iOS.entitlements
     scheme:

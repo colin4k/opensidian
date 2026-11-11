@@ -11779,7 +11779,10 @@ $("p-open").onclick = () => enterMode("open");
 /* iOS: one system picker call, then the same enterVault the desktop path uses.
    ios_pick_vault does pick + bookmark + bind in Rust, so the frontend never
    touches the bookmark — only the path it resolved to. "cancelled" is the
-   user closing the picker, not an error to show. */
+   user closing the picker, not an error to show.
+   The picker's UI is a SEPARATE system process: on a cold first run it can stay
+   blank for a minute before it draws anything, which is why the button stays
+   disabled (and the wait is up to five minutes) instead of reporting a hang. */
 $("p-pick").onclick = iosPickVault;
 async function iosPickVault() {
   /* With a vault already open this is a switch: flush first (into the vault we

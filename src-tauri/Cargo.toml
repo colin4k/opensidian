@@ -29,6 +29,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["app"]
 app = []
 devui = []
+# Production asset embedding. tauri decides dev-vs-production from THIS feature
+# (build.rs: `let dev = !custom_protocol`), not from the cargo profile: without
+# it even a --release binary proxies tauri://localhost to a dev server and the
+# app shows "Failed to request tauri://localhost/". `tauri build` / `tauri ios
+# build` add `tauri/custom-protocol` themselves; this alias exists so a manual
+# or CI build can say `--features custom-protocol` and get the same binary.
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2.1", features = [] }
