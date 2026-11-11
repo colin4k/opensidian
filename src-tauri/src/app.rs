@@ -2037,6 +2037,51 @@ async fn ios_pick_vault(app: tauri::AppHandle) -> Result<String, String> {
     Ok(picked.path)
 }
 
+/// Bind a folder that arrived as a URL instead of from the picker: ask the
+/// platform to start its security scope and bookmark it, then do exactly what a
+/// pick does. Kept apart from ios_pick_vault because nothing about it is a pick —
+/// the URL is already in hand, and on a cold start it is the reason the app
+/// launched at all.
+fn adopt_folder_path(app: &tauri::AppHandle, path: &Path) -> Result<String, String> {
+    let picked = platform::adopt_folder(path)?;
+    let p = PathBuf::from(&picked.path);
+    vault_rules(&p)?;
+    bind_vault(&app.state::<Vault>(), &p)?;
+    maybe_spawn_fill(app, &app.state::<Vault>());
+    bookmark_put(&picked.path, &picked.bookmark, &picked.name);
+    persist_vault(&p);
+    Ok(picked.path)
+}
+
+/// The system opened the app with a folder (Files ▸ Open With, the share sheet).
+/// Boot's bookmark restore cannot help: there is no bookmark yet, so the URL has
+/// to be adopted while its scope is still live, and then bound like a pick.
+#[cfg(target_os = "ios")]
+fn adopt_opened(app: &tauri::AppHandle, urls: Vec<tauri::Url>) {
+    use tauri::Emitter;
+    for url in urls {
+        if url.scheme() != "file" {
+            eprintln!("[openin] ignoring non-file url {url}");
+            continue;
+        }
+        let Ok(path) = url.to_file_path() else { continue };
+        platform::diag(&format!("open-in: {}", path.display()));
+        match adopt_folder_path(app, &path) {
+            Ok(p) => {
+                platform::diag(&format!("open-in: bound {p}"));
+                let _ = app.emit("vault-adopted", serde_json::json!({ "path": p }));
+            }
+            Err(e) => {
+                platform::diag(&format!("open-in refused: {e}"));
+                eprintln!("[openin] refused {}: {e}", path.display());
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn adopt_opened(_app: &tauri::AppHandle, _urls: Vec<tauri::Url>) {}
+
 #[tauri::command]
 async fn ios_restore_vault(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let saved = bookmark_get(&path).ok_or_else(|| format!("{path}: no saved bookmark — choose the folder again"))?;
@@ -6968,7 +7013,15 @@ pub fn run() {
             settings::settings_model
     ]);
 
-    builder.run(ctx).expect("tauri run");
+    /* RunEvent::Opened is the second door into a vault: the system opening the
+       app WITH a folder. It is delivered only through `run`, so the builder is
+       built first. */
+    let app = builder.build(ctx).expect("tauri build");
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Opened { urls } = event {
+            adopt_opened(handle, urls);
+        }
+    });
 }
 
 #[cfg(test)]

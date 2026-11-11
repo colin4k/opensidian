@@ -92,7 +92,7 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
     private func watchMainThread(_ box: ResultBox) {
         DispatchQueue.global(qos: .utility).async {
             var ticks = 0
-            while !box.answered && ticks < 150 {
+            while !box.answered && ticks < 900 {   // matches the 30-minute wait
                 let mark = DispatchSemaphore(value: 0)
                 DispatchQueue.main.async { mark.signal() }
                 if mark.wait(timeout: .now() + 2) == .timedOut {
@@ -193,7 +193,12 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
             }
         }
         watchMainThread(box)
-        let answer = box.wait(seconds: 300)
+        /* Half an hour, not five minutes: the user may leave the sheet open while
+           Files copies a large folder (the copy itself can outlast a short
+           deadline, and a timeout here only makes the app give up on a picker
+           that is still working). The deadline exists to stop a LOST callback
+           from wedging every later attempt, not to bound the user. */
+        let answer = box.wait(seconds: 1800)
         VaultBridge.diag("pickFolder return \(answer.prefix(60))")
         if answer.contains("did not answer in time") {
             expired()
@@ -244,6 +249,33 @@ private final class VaultBridge: NSObject, UIDocumentPickerDelegate {
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         VaultBridge.diag("cancelled")
         finish("{\"cancelled\":true}")
+    }
+
+    // MARK: adopt
+
+    /// A folder the SYSTEM handed us — Files ▸ Open With, a share sheet target,
+    /// or a file provider passing a directory — instead of one the picker
+    /// returned. Same contract as a pick: the URL is security-scoped, so the
+    /// scope is started here and the bookmark minted before it is handed back,
+    /// and the URL is held for as long as it is the vault.
+    func adopt(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path)
+        guard url.startAccessingSecurityScopedResource() else {
+            return mvError("iOS refused access to that folder")
+        }
+        do {
+            let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            hold(url)
+            VaultBridge.diag("adopted \(url.path)")
+            return mvJSON([
+                "path": url.path,
+                "bookmark": bookmark.base64EncodedString(),
+                "name": url.lastPathComponent,
+            ])
+        } catch {
+            url.stopAccessingSecurityScopedResource()
+            return mvError("could not bookmark that folder: \(error.localizedDescription)")
+        }
     }
 
     // MARK: restore
@@ -420,6 +452,12 @@ public func opensidianMvOpenUrl(_ url: UnsafePointer<CChar>?) -> UnsafeMutablePo
         UIApplication.shared.open(target, options: [:], completionHandler: nil)
     }
     return mvDup(mvJSON(["opened": true]))
+}
+
+@_silgen_name("opensidian_mv_adopt")
+public func opensidianMvAdopt(_ path: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+    guard let path else { return mvDup(mvError("missing path")) }
+    return mvDup(VaultBridge.shared.adopt(String(cString: path)))
 }
 
 /// Rust's half of the same log. The app's steps after the picker closes (bind,

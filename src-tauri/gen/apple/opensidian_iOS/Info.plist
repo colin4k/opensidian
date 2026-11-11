@@ -33,6 +33,28 @@
 	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- A vault is a FOLDER, and this is the one declaration that says so.
+	     Without a document type, LSSupportsOpeningDocumentsInPlace has nothing
+	     to apply to: the picker navigates a provider's folders but never lets
+	     one be handed over ("Open" stays inert, which is what the device showed
+	     for iCloud Drive while our own local Documents was selectable). It is
+	     also what makes "Open in Opensidian" appear in Files at all — the other
+	     door into a vault, for when a provider refuses the picker. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Obsidian vault</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
 	<!-- iOS 26+ / Xcode 26+ SDK: UIKit REFUSES to launch an app that does not
 	     declare UIScene adoption — UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption
 	     traps on the main thread at launch. tao (under tauri-runtime-wry)

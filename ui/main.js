@@ -12164,6 +12164,14 @@ async function onVaultChanged(c) {
   if (rightOpen) rSchedule();
   updateTitle();
 }
+/* iOS: the system opened the app WITH a folder (Files ▸ Open in Opensidian),
+   and Rust has already adopted + bound it. That arrives on a cold start too,
+   where the boot flow simply finds a bound vault — a reload is both cases, the
+   same teardown the in-place vault switch uses. */
+TAURI.event.listen("vault-adopted", async () => {
+  try { if (state) await leaveVault(); } catch (_) {}
+  window.location.reload();
+});
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
 /* P4-lazy: the background fill finished (or reported progress). Names were
    already in the tree; this is where backlinks, tags, the open search and any

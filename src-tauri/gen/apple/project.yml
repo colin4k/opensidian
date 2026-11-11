@@ -71,6 +71,16 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         ITSAppUsesNonExemptEncryption: false
+        # A vault is a folder: without a declared document type, opening one in
+        # place has nothing to apply to and the picker's Open button never arms
+        # for a provider (iCloud Drive). Also what makes "Open in Opensidian"
+        # appear in Files.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Obsidian vault
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.folder
     entitlements:
       path: opensidian_iOS/opensidian_iOS.entitlements
     scheme:

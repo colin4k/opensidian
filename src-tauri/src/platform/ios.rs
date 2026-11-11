@@ -102,6 +102,18 @@ pub fn diag(message: &str) {
     opensidian_mobilevault::diag(message);
 }
 
+/// A folder the system opened the app with, rather than one the picker returned.
+/// The URL is security-scoped the same way, so the bridge starts it and mints the
+/// bookmark; the answer has the same shape as a pick.
+pub fn adopt_folder(path: &Path) -> Result<Picked, String> {
+    let v = answer(opensidian_mobilevault::adopt(&path.display().to_string()))?;
+    Ok(Picked {
+        path: v["path"].as_str().ok_or("vault bridge: no path in the answer")?.to_string(),
+        bookmark: v["bookmark"].as_str().unwrap_or_default().to_string(),
+        name: v["name"].as_str().unwrap_or_default().to_string(),
+    })
+}
+
 pub fn restore_bookmark(base64: &str) -> Result<Restored, String> {
     let v = answer(opensidian_mobilevault::restore(base64))?;
     Ok(Restored {

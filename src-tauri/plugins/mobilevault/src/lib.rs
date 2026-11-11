@@ -24,6 +24,7 @@ extern "C" {
     fn opensidian_mv_download(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_open_url(url: *const c_char) -> *mut c_char;
     fn opensidian_mv_diag(message: *const c_char);
+    fn opensidian_mv_adopt(path: *const c_char) -> *mut c_char;
     fn opensidian_mv_free(text: *mut c_char);
 }
 
@@ -64,6 +65,13 @@ pub fn diag(message: &str) {
 /// user picks or cancels. JSON: {path, bookmark, name} or {cancelled:true} / {error}.
 pub fn pick_folder() -> String {
     take(unsafe { opensidian_mv_pick_folder() })
+}
+
+/// Adopt a folder the SYSTEM handed the app (Files "Open With", a share sheet, a
+/// file provider passing a directory). Same answer as `pick_folder`: the URL is
+/// security-scoped, so Swift starts it and bookmarks it before returning.
+pub fn adopt(path: &str) -> String {
+    with_c(path, |p| unsafe { opensidian_mv_adopt(p) })
 }
 
 /// Resolve a saved bookmark and start security-scoped access to its folder.

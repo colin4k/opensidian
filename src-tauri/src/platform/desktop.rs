@@ -57,6 +57,12 @@ pub fn pick_folder() -> Result<Picked, String> {
 /// The iOS picker log has no desktop counterpart: stderr is always there.
 pub fn diag(_message: &str) {}
 
+/// Desktop opens folders through its own browser; nothing is handed to the app
+/// as a security-scoped URL.
+pub fn adopt_folder(_path: &Path) -> Result<Picked, String> {
+    Err("this platform does not adopt folders from the system".into())
+}
+
 pub fn restore_bookmark(_base64: &str) -> Result<Restored, String> {
     Err("security-scoped bookmarks are an iOS feature".into())
 }
