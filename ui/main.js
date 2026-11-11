@@ -12388,12 +12388,16 @@ async function openSettings() {
   $("settings").hidden = false;
   buildSettingsNav();
   showSettingsPage(sPane);
+  // iOS opens on the LIST: the pane is built (census and row counts describe it)
+  // but the list is what a phone shows first. Desktop ignores both calls.
+  setSettingsDetail(false);
   sfpEnd();        // BEFORE the census: updateTitle walks the whole document for
   updateTitle();   // the R22 overflow probe, and that is the instrument's cost, not the modal's
 }
 function closeSettings() {
   const r = sEdSel; sEdSel = null;
   settingsOpen = false; hkRec = null; fontPage = null;
+  setSettingsDetail(false);
   KC.close();                           // keychain-pane: and with the modal
   if (window.__osPluginSettings) __osPluginSettings.close();   // a plugin tab on screen gets its hide()
   /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
@@ -12433,15 +12437,29 @@ function buildSettingsNav() {
   if (window.__osPluginSettings) __osPluginSettings.nav(nav);   // plugin-loader: Community plugins entry + its per-plugin group
   nav.dataset.built = "1";
 }
+/* iOS: one column at a time inside Settings. The pane is still BUILT while the
+   list is showing — the census [spane:] and the row counts describe the open
+   pane — it is only not painted. `detail` is the class that picks the column;
+   the desktop modal has no such class and keeps both columns. */
+function setSettingsDetail(on) {
+  if (!PLATFORM.mobile) return;
+  $("sbox").classList.toggle("detail", !!on);
+  $("sback").hidden = !on;
+  if (!on) $("shead").querySelector("span").textContent = "Settings";
+}
+
 /* `id` is a pane id from the model ("general", "hotkeys", ...);
    an Obsidian ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
+  setSettingsDetail(true);              // iOS: selecting a row opens the pane; no-op on desktop
   KC.close();                           // keychain-pane: an open add/edit/delete form goes with the pane
   if (window.__osPluginSettings && __osPluginSettings.show(id)) return;   // plugin-loader: "community" / "plg:<id>" panes (ui/plugins/settings.js)
   fontPage = null;                      // fontset: any pane switch leaves the font chooser
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
   const pane = e ? e.id : "hotkeys";
   sPane = pane;
+  // iOS detail header shows WHERE you are; the list header says "Settings".
+  if (PLATFORM.mobile) $("shead").querySelector("span").textContent = e ? e.entry : "Settings";
   for (const d of $("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === pane);
   const pg = $("spage"); pg.innerHTML = ""; pg.className = "";
   const rows = SMODEL.rows.filter(r => r.tab === pane);   // what this pane owes the census
@@ -12995,6 +13013,10 @@ function hkKey(e) {                          // keyboard while settings is open
   if (c && c.id === "app:open-settings") { e.preventDefault(); closeSettings(); }
 }
 $("sclose").onclick = closeSettings;
+/* iOS detail header: back to the list, no rebuild (the pane stays built, it is
+   only unpainted). updateTitle so the census reflects the list/detail state on
+   the next frame; harmless on desktop where this button never shows. */
+$("sback").onclick = () => { setSettingsDetail(false); updateTitle(); };
 $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings(); };
 // [sqf:] (and every other settings rect token) is a PAINTED position: a scrolled
 // pane moves it, so the census follows the scroll (scroll doesn't bubble: capture)

@@ -2201,3 +2201,37 @@ html[data-platform="ios"] body {
   -webkit-text-size-adjust: 100%;       /* rotation must not re-scale the type */
   -webkit-tap-highlight-color: transparent;
 }
+
+/* ---- iOS settings: full screen, list -> detail -----------------------------
+   The desktop modal is 900x600-ish card over a scrim. On a phone that is a
+   scaled-down desktop, so here it is the whole screen with one navigation
+   column at a time: the list, then the pane with a back arrow in the header
+   (the same shape as Obsidian mobile). Desktop keeps the two-column card. */
+html[data-platform="ios"] #settings { background: var(--bg-elevated) }
+html[data-platform="ios"] #sbox {
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  border: 0; border-radius: 0; box-shadow: none;
+  padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+}
+html[data-platform="ios"] #shead { height: 44px; padding: 0 6px; font-size: 15px }
+html[data-platform="ios"] #sback,
+html[data-platform="ios"] #sclose { min-width: 40px; min-height: 40px; display: inline-flex;
+  align-items: center; justify-content: center; background: none; border: 0;
+  color: var(--text-chrome-muted); cursor: pointer }
+html[data-platform="ios"] #sback[hidden] { display: none }
+html[data-platform="ios"] #sbody { flex-direction: column }
+html[data-platform="ios"] #snav {
+  width: 100%; border-right: 0; flex: 1; padding: 4px 0;
+  padding-bottom: calc(4px + env(safe-area-inset-bottom));
+}
+html[data-platform="ios"] #snav .snavi { min-height: 44px; display: flex; align-items: center; padding: 0 16px; font-size: 14px }
+html[data-platform="ios"] #snav .snavh { padding: 10px 16px 4px }
+html[data-platform="ios"] #spage { width: 100%; flex: 1; padding: 12px 14px; overflow-y: auto }
+html[data-platform="ios"] #spage.rows { padding: 12px 14px }
+/* one column at a time: the list, or the pane the back arrow came from */
+html[data-platform="ios"] #sbox:not(.detail) #spage { display: none }
+html[data-platform="ios"] #sbox.detail #snav { display: none }
+/* the control column must leave the label room on a narrow screen */
+html[data-platform="ios"] .srow { min-height: 60px; padding: 12px; gap: 12px }
+html[data-platform="ios"] .sctl.dropdown { width: 120px; max-width: 42vw }
+html[data-platform="ios"] .frange { width: 120px; max-width: 42vw }
